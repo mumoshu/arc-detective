@@ -1,0 +1,221 @@
+//go:build e2e_full
+// +build e2e_full
+
+package e2e_full
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// runCmd executes a command and returns its combined stdout/stderr.
+func runCmd(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// mustRunCmd runs a command and fails the test if it errors.
+func mustRunCmd(name string, args ...string) string {
+	out, err := runCmd(name, args...)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		fmt.Sprintf("Command failed: %s %s\nOutput: %s", name, strings.Join(args, " "), out))
+	return out
+}
+
+// waitForPodWithLabel waits for a pod matching the label selector to exist and returns its name.
+func waitForPodWithLabel(namespace, labelSelector string, timeout, poll time.Duration) string {
+	var podName string
+	EventuallyWithOffset(1, func(g Gomega) {
+		out, err := runCmd("kubectl", "get", "pods",
+			"-l", labelSelector,
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].metadata.name}",
+			"--field-selector=status.phase!=Succeeded,status.phase!=Failed")
+		g.Expect(err).NotTo(HaveOccurred(), "kubectl get pods failed: %s", out)
+		names := strings.Fields(out)
+		g.Expect(names).NotTo(BeEmpty(), "no pods found with label %s", labelSelector)
+		podName = names[0]
+	}, timeout, poll).Should(Succeed())
+	return podName
+}
+
+// waitForPodWithLabelOrFail is like waitForPodWithLabel but returns an error instead of calling Fail.
+func waitForPodWithLabelOrFail(namespace, labelSelector string, timeout, poll time.Duration) (string, error) {
+	var podName string
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := runCmd("kubectl", "get", "pods",
+			"-l", labelSelector,
+			"-n", namespace,
+			"-o", "jsonpath={.items[*].metadata.name}",
+			"--field-selector=status.phase!=Succeeded,status.phase!=Failed")
+		if err == nil {
+			names := strings.Fields(out)
+			if len(names) > 0 {
+				podName = names[0]
+				return podName, nil
+			}
+		}
+		time.Sleep(poll)
+	}
+	return "", fmt.Errorf("timed out after %v waiting for pod with label %s in %s", timeout, labelSelector, namespace)
+}
+
+// waitForPodPhase waits until the named pod reaches the given phase.
+func waitForPodPhase(namespace, podName, phase string, timeout, poll time.Duration) {
+	EventuallyWithOffset(1, func(g Gomega) {
+		out, err := runCmd("kubectl", "get", "pod", podName,
+			"-n", namespace,
+			"-o", "jsonpath={.status.phase}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).To(Equal(phase), "pod %s phase is %s, want %s", podName, out, phase)
+	}, timeout, poll).Should(Succeed())
+}
+
+// waitForContainerTerminated waits until the first container in the pod is terminated.
+// Returns the termination reason.
+func waitForContainerTerminated(namespace, podName string, timeout, poll time.Duration) string {
+	var reason string
+	EventuallyWithOffset(1, func(g Gomega) {
+		out, err := runCmd("kubectl", "get", "pod", podName,
+			"-n", namespace,
+			"-o", "jsonpath={.status.containerStatuses[0].state.terminated.reason}")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).NotTo(BeEmpty(), "container not yet terminated")
+		reason = out
+	}, timeout, poll).Should(Succeed())
+	return reason
+}
+
+// waitForInvestigationComplete waits for an Investigation CR with phase "Complete"
+// in any namespace and returns its namespace and name.
+func waitForInvestigationComplete(timeout, poll time.Duration) (string, string) {
+	var ns, name string
+	EventuallyWithOffset(1, func(g Gomega) {
+		// Get all investigations across namespaces
+		out, err := runCmd("kubectl", "get", "investigations.detective.arcdetective.io",
+			"-A", "-o", "jsonpath={range .items[?(@.status.phase==\"Complete\")]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}")
+		g.Expect(err).NotTo(HaveOccurred(), "failed to list investigations: %s", out)
+		lines := strings.Fields(out)
+		g.Expect(lines).NotTo(BeEmpty(), "no completed investigations found")
+		parts := strings.SplitN(lines[0], "/", 2)
+		g.Expect(parts).To(HaveLen(2))
+		ns = parts[0]
+		name = parts[1]
+	}, timeout, poll).Should(Succeed())
+	return ns, name
+}
+
+// getInvestigationField retrieves a jsonpath field from an Investigation CR.
+func getInvestigationField(namespace, name, jsonpath string) string {
+	out, err := runCmd("kubectl", "get", "investigation.detective.arcdetective.io", name,
+		"-n", namespace,
+		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "failed to get investigation field: %s", out)
+	return out
+}
+
+// dumpHelmInfo dumps Helm release values and rendered manifests for debugging.
+func dumpHelmInfo(helmBin, releaseName, namespace, version, valuesPath string) {
+	fmt.Fprintf(GinkgoWriter, "\n=== HELM DEBUG INFO ===\n")
+
+	// Dump the values file used
+	if valuesPath != "" {
+		fmt.Fprintf(GinkgoWriter, "\n--- values file: %s ---\n", valuesPath)
+		content, err := os.ReadFile(valuesPath)
+		if err != nil {
+			fmt.Fprintf(GinkgoWriter, "ERROR reading values file: %v\n", err)
+		} else {
+			fmt.Fprintf(GinkgoWriter, "%s\n", string(content))
+		}
+	}
+
+	// Dump computed values of the installed release
+	fmt.Fprintf(GinkgoWriter, "\n--- helm get values %s ---\n", releaseName)
+	out, err := runCmd(helmBin, "get", "values", releaseName, "-n", namespace, "-a")
+	if err != nil {
+		fmt.Fprintf(GinkgoWriter, "ERROR: %v\n%s\n", err, out)
+	} else {
+		fmt.Fprintf(GinkgoWriter, "%s\n", out)
+	}
+
+	// Dump rendered manifests
+	fmt.Fprintf(GinkgoWriter, "\n--- helm get manifest %s ---\n", releaseName)
+	out, err = runCmd(helmBin, "get", "manifest", releaseName, "-n", namespace)
+	if err != nil {
+		fmt.Fprintf(GinkgoWriter, "ERROR: %v\n%s\n", err, out)
+	} else {
+		fmt.Fprintf(GinkgoWriter, "%s\n", out)
+	}
+}
+
+// dumpDiagnostics collects debug info when a test fails.
+func dumpDiagnostics(kindBin, kindCluster, detectiveNS, runnerNS string) {
+	fmt.Fprintf(GinkgoWriter, "\n=== DIAGNOSTIC DUMP (test failed) ===\n")
+
+	dumps := []struct {
+		label string
+		args  []string
+	}{
+		{"all pods (wide)",
+			[]string{"kubectl", "get", "pods", "-A", "-o", "wide"}},
+		{"describe all pods in " + runnerNS,
+			[]string{"kubectl", "describe", "pods", "-n", runnerNS}},
+		{"describe all pods in " + detectiveNS,
+			[]string{"kubectl", "describe", "pods", "-n", detectiveNS}},
+		{"describe all pods in arc-systems",
+			[]string{"kubectl", "describe", "pods", "-n", arcSystemNS}},
+		{"arc-detective controller logs",
+			[]string{"kubectl", "logs", "-l", "control-plane=controller-manager", "-n", detectiveNS, "--tail=200", "--all-containers"}},
+		{"ARC controller logs (arc-systems)",
+			[]string{"kubectl", "logs", "-n", arcSystemNS, "--tail=200", "--all-containers", "-l", "app.kubernetes.io/part-of=gha-rs-controller"}},
+		{"ARC listener logs (arc-systems)",
+			[]string{"kubectl", "logs", "-n", arcSystemNS, "--tail=200", "--all-containers", "-l", "actions.github.com/scale-set-name=" + arcReleaseName}},
+		{"runner pod details",
+			[]string{"kubectl", "describe", "pods", "-l", "actions-ephemeral-runner=True", "-A"}},
+		{"investigations",
+			[]string{"kubectl", "get", "investigations.detective.arcdetective.io", "-A", "-o", "yaml"}},
+		{"detective configs",
+			[]string{"kubectl", "get", "detectiveconfigs.detective.arcdetective.io", "-A", "-o", "yaml"}},
+		{"events in " + runnerNS,
+			[]string{"kubectl", "get", "events", "-n", runnerNS, "--sort-by=.lastTimestamp"}},
+		{"events in " + detectiveNS,
+			[]string{"kubectl", "get", "events", "-n", detectiveNS, "--sort-by=.lastTimestamp"}},
+		{"events in arc-systems",
+			[]string{"kubectl", "get", "events", "-n", arcSystemNS, "--sort-by=.lastTimestamp"}},
+		{"ephemeral runners",
+			[]string{"kubectl", "get", "ephemeralrunners.actions.github.com", "-A", "-o", "yaml"}},
+		{"autoscaling runner sets",
+			[]string{"kubectl", "get", "autoscalingrunnersets.actions.github.com", "-A", "-o", "yaml"}},
+		{"autoscaling listeners",
+			[]string{"kubectl", "get", "autoscalinglisteners.actions.github.com", "-A", "-o", "yaml"}},
+	}
+
+	for _, d := range dumps {
+		fmt.Fprintf(GinkgoWriter, "\n--- %s ---\n", d.label)
+		out, err := runCmd(d.args[0], d.args[1:]...)
+		if err != nil {
+			fmt.Fprintf(GinkgoWriter, "ERROR: %v\n%s\n", err, out)
+		} else {
+			fmt.Fprintf(GinkgoWriter, "%s\n", out)
+		}
+	}
+
+	// Export Kind logs
+	if kindBin != "" && kindCluster != "" {
+		fmt.Fprintf(GinkgoWriter, "\n--- kind export logs ---\n")
+		out, err := runCmd(kindBin, "export", "logs", "/tmp/kind-e2e-full-logs", "--name", kindCluster)
+		if err != nil {
+			fmt.Fprintf(GinkgoWriter, "ERROR: %v\n%s\n", err, out)
+		} else {
+			fmt.Fprintf(GinkgoWriter, "Kind logs exported to /tmp/kind-e2e-full-logs\n")
+		}
+	}
+}

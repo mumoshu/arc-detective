@@ -1,0 +1,386 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: investigations.detective.arcdetective.io
+spec:
+  group: detective.arcdetective.io
+  names:
+    kind: Investigation
+    listKind: InvestigationList
+    plural: investigations
+    singular: investigation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.trigger.type
+      name: Trigger
+      type: string
+    - jsonPath: .spec.diagnosis.failureType
+      name: Failure
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Investigation is a forensic report created when a failure is
+          detected.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              InvestigationSpec is the forensic report content — all collected evidence.
+              Controllers populate these fields as they gather data.
+            properties:
+              diagnosis:
+                description: Diagnosis is the classified failure and suggested remediation.
+                properties:
+                  failureType:
+                    description: FailureType is the classified failure type, e.g.
+                      "pod-oomkilled".
+                    type: string
+                  remediation:
+                    description: Remediation suggests how to fix or prevent the failure.
+                    type: string
+                  summary:
+                    description: Summary is a human-readable description of the failure.
+                    type: string
+                required:
+                - failureType
+                - summary
+                type: object
+              ephemeralRunner:
+                description: EphemeralRunner holds data collected from the ARC EphemeralRunner
+                  CR.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  phase:
+                    description: Phase is a snapshot of the EphemeralRunner phase
+                      at investigation time.
+                    type: string
+                  statusHistory:
+                    description: StatusHistory records observed phase transitions.
+                    items:
+                      properties:
+                        from:
+                          type: string
+                        timestamp:
+                          format: date-time
+                          type: string
+                        to:
+                          type: string
+                      required:
+                      - from
+                      - timestamp
+                      - to
+                      type: object
+                    type: array
+                required:
+                - name
+                - namespace
+                - phase
+                type: object
+              job:
+                description: Job holds data about the specific GitHub Actions job.
+                properties:
+                  completedAt:
+                    format: date-time
+                    type: string
+                  conclusion:
+                    type: string
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                  runnerName:
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                  status:
+                    type: string
+                  steps:
+                    items:
+                      properties:
+                        conclusion:
+                          type: string
+                        name:
+                          type: string
+                        status:
+                          type: string
+                      required:
+                      - name
+                      - status
+                      type: object
+                    type: array
+                required:
+                - id
+                - name
+                - status
+                type: object
+              logPaths:
+                description: LogPaths lists paths to collected logs on the PV.
+                items:
+                  type: string
+                type: array
+              pod:
+                description: Pod holds data collected from the runner pod.
+                properties:
+                  conditionTransitions:
+                    description: ConditionTransitions records changes in pod conditions
+                      over time.
+                    items:
+                      properties:
+                        message:
+                          type: string
+                        reason:
+                          type: string
+                        status:
+                          type: string
+                        timestamp:
+                          format: date-time
+                          type: string
+                        type:
+                          description: 'Type is the condition type: "Ready", "PodScheduled",
+                            "ContainersReady", "Initialized".'
+                          type: string
+                      required:
+                      - status
+                      - timestamp
+                      - type
+                      type: object
+                    type: array
+                  conditions:
+                    description: Conditions is a snapshot of current pod conditions.
+                    items:
+                      properties:
+                        message:
+                          type: string
+                        reason:
+                          type: string
+                        status:
+                          type: string
+                        type:
+                          type: string
+                      required:
+                      - status
+                      - type
+                      type: object
+                    type: array
+                  containerStatuses:
+                    description: ContainerStatuses holds per-container status information.
+                    items:
+                      properties:
+                        exitCode:
+                          format: int32
+                          type: integer
+                        name:
+                          type: string
+                        oomKilled:
+                          type: boolean
+                        reason:
+                          type: string
+                        restartCount:
+                          format: int32
+                          type: integer
+                        state:
+                          type: string
+                        stateHistory:
+                          description: StateHistory records container state transitions.
+                          items:
+                            properties:
+                              exitCode:
+                                format: int32
+                                type: integer
+                              from:
+                                type: string
+                              reason:
+                                type: string
+                              timestamp:
+                                format: date-time
+                                type: string
+                              to:
+                                type: string
+                            required:
+                            - from
+                            - timestamp
+                            - to
+                            type: object
+                          type: array
+                      required:
+                      - name
+                      - restartCount
+                      - state
+                      type: object
+                    type: array
+                  events:
+                    description: Events holds Kubernetes events related to this pod.
+                    items:
+                      properties:
+                        count:
+                          format: int32
+                          type: integer
+                        firstSeen:
+                          format: date-time
+                          type: string
+                        lastSeen:
+                          format: date-time
+                          type: string
+                        message:
+                          type: string
+                        reason:
+                          type: string
+                        source:
+                          type: string
+                        type:
+                          description: Type is "Normal" or "Warning".
+                          type: string
+                      required:
+                      - firstSeen
+                      - lastSeen
+                      - message
+                      - reason
+                      - type
+                      type: object
+                    type: array
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  nodeName:
+                    description: NodeName is the node the pod was scheduled on.
+                    type: string
+                  phase:
+                    type: string
+                  phaseHistory:
+                    description: PhaseHistory records pod phase transitions (e.g.
+                      Pending→Running→Succeeded).
+                    items:
+                      properties:
+                        from:
+                          type: string
+                        timestamp:
+                          format: date-time
+                          type: string
+                        to:
+                          type: string
+                      required:
+                      - from
+                      - timestamp
+                      - to
+                      type: object
+                    type: array
+                required:
+                - name
+                - namespace
+                - phase
+                type: object
+              timeline:
+                description: Timeline is a correlated sequence of events from all
+                  sources.
+                items:
+                  properties:
+                    message:
+                      type: string
+                    source:
+                      type: string
+                    timestamp:
+                      format: date-time
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - source
+                  - timestamp
+                  - type
+                  type: object
+                type: array
+              trigger:
+                description: Trigger describes what initiated this investigation.
+                properties:
+                  source:
+                    description: Source identifies the resource that triggered the
+                      investigation.
+                    type: string
+                  type:
+                    description: |-
+                      Type classifies the trigger: "runner-stuck", "job-failed", "pod-crash",
+                      "pod-oomkill", "pod-stuck-terminating".
+                    type: string
+                required:
+                - source
+                - type
+                type: object
+              workflowRun:
+                description: WorkflowRun holds data collected from the GitHub Actions
+                  API.
+                properties:
+                  conclusion:
+                    type: string
+                  htmlURL:
+                    type: string
+                  id:
+                    format: int64
+                    type: integer
+                  name:
+                    type: string
+                  repository:
+                    type: string
+                  status:
+                    type: string
+                required:
+                - htmlURL
+                - id
+                - name
+                - repository
+                - status
+                type: object
+            required:
+            - trigger
+            type: object
+          status:
+            description: InvestigationStatus is the lifecycle state of the investigation.
+            properties:
+              message:
+                description: Message provides detail when Phase is "Failed".
+                type: string
+              phase:
+                description: Phase is "Collecting", "Complete", or "Failed".
+                type: string
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

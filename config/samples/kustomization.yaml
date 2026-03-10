@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- detective_v1alpha1_detectiveconfig.yaml
+- detective_v1alpha1_investigation.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

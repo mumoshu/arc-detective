@@ -1,0 +1,9 @@
+apiVersion: detective.arcdetective.io/v1alpha1
+kind: Investigation
+metadata:
+  labels:
+    app.kubernetes.io/name: arc-detective
+    app.kubernetes.io/managed-by: kustomize
+  name: investigation-sample
+spec:
+  # TODO(user): Add fields here

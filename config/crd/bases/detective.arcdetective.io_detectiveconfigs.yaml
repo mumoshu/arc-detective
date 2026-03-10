@@ -1,0 +1,115 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: detectiveconfigs.detective.arcdetective.io
+spec:
+  group: detective.arcdetective.io
+  names:
+    kind: DetectiveConfig
+    listKind: DetectiveConfigList
+    plural: detectiveconfigs
+    singular: detectiveconfig
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DetectiveConfig is the singleton configuration for ARC Detective.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              githubAuth:
+                description: GitHubAuth references a Secret containing GitHub credentials.
+                properties:
+                  secretName:
+                    description: SecretName references the Secret containing credentials.
+                    type: string
+                  type:
+                    description: Type is "app" or "pat".
+                    enum:
+                    - app
+                    - pat
+                    type: string
+                required:
+                - secretName
+                - type
+                type: object
+              logStorage:
+                description: LogStorage configures where collected pod logs are stored.
+                properties:
+                  maxSizeMB:
+                    description: MaxSizeMB is the maximum storage usage before oldest
+                      logs are pruned.
+                    type: integer
+                  pvcName:
+                    description: PVCName is the PersistentVolumeClaim used for log
+                      storage.
+                    type: string
+                required:
+                - pvcName
+                type: object
+              pollInterval:
+                description: 'PollInterval controls how often the GitHub API is polled.
+                  Default: 30s.'
+                type: string
+              repositories:
+                description: Repositories lists the GitHub repos to monitor for failed
+                  workflow jobs.
+                items:
+                  properties:
+                    name:
+                      type: string
+                    owner:
+                      type: string
+                  required:
+                  - name
+                  - owner
+                  type: object
+                type: array
+              retentionPeriod:
+                description: 'RetentionPeriod controls how long Investigation CRs
+                  are kept. Default: 7d.'
+                type: string
+            required:
+            - githubAuth
+            - logStorage
+            - repositories
+            type: object
+          status:
+            properties:
+              message:
+                description: Message provides additional detail when Phase is Error.
+                type: string
+              phase:
+                description: 'Phase indicates the current state of the config: "Ready",
+                  "Error".'
+                type: string
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

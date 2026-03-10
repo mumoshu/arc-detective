@@ -1,0 +1,16 @@
+name: arc-detective-e2e-test
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Test run identifier'
+        required: true
+jobs:
+  oom-target:
+    runs-on: %RUNNER_LABEL%
+    steps:
+      - name: Trigger OOM
+        run: |
+          echo "Test run: ${{ github.event.inputs.run_id }}"
+          echo "Allocating memory to trigger OOM..."
+          head -c 128M /dev/zero > /dev/shm/oom
