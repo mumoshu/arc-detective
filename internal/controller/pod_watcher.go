@@ -76,8 +76,8 @@ func (r *PodWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(&pod, logCollectorFinalizer) {
+	// Add finalizer if not present (but not if the pod is already being deleted)
+	if pod.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&pod, logCollectorFinalizer) {
 		controllerutil.AddFinalizer(&pod, logCollectorFinalizer)
 		if err := r.Update(ctx, &pod); err != nil {
 			return ctrl.Result{}, err

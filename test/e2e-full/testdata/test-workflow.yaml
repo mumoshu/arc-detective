@@ -5,12 +5,30 @@ on:
       run_id:
         description: 'Test run identifier'
         required: true
+      failure_mode:
+        description: 'How to fail: oom or exit1'
+        required: true
+        default: 'oom'
 jobs:
-  oom-target:
+  failure-target:
     runs-on: %RUNNER_LABEL%
     steps:
-      - name: Trigger OOM
+      - name: Trigger failure
         run: |
           echo "Test run: ${{ github.event.inputs.run_id }}"
-          echo "Allocating memory to trigger OOM..."
-          head -c 128M /dev/zero > /dev/shm/oom
+          echo "Failure mode: ${{ github.event.inputs.failure_mode }}"
+          if [ "${{ github.event.inputs.failure_mode }}" = "oom" ]; then
+            echo "Allocating memory to trigger OOM..."
+            # Allocate real RSS memory exceeding the 256Mi cgroup limit.
+            # Use a bash array to hold large strings in memory.
+            # Each iteration adds ~1MB of resident memory.
+            declare -a mem
+            i=0
+            while true; do
+              mem[$i]=$(head -c 1048576 /dev/urandom | base64)
+              i=$((i + 1))
+            done
+          else
+            echo "Exiting with code 1..."
+            exit 1
+          fi

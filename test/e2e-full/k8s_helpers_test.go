@@ -113,6 +113,35 @@ func waitForInvestigationComplete(timeout, poll time.Duration) (string, string) 
 	return ns, name
 }
 
+// waitForInvestigationWithTrigger waits for a completed Investigation with a specific trigger type.
+func waitForInvestigationWithTrigger(triggerType string, timeout, poll time.Duration) (string, string) {
+	var ns, name string
+	EventuallyWithOffset(1, func(g Gomega) {
+		// List all completed investigations and find one with the matching trigger type
+		out, err := runCmd("kubectl", "get", "investigations.detective.arcdetective.io",
+			"-A", "-o", "jsonpath={range .items[*]}{.status.phase},{.spec.trigger.type},{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}")
+		g.Expect(err).NotTo(HaveOccurred(), "failed to list investigations: %s", out)
+		var found bool
+		for _, line := range strings.Split(out, "\n") {
+			parts := strings.SplitN(line, ",", 3)
+			if len(parts) != 3 {
+				continue
+			}
+			phase, trigger, nsName := parts[0], parts[1], parts[2]
+			if phase == "Complete" && trigger == triggerType {
+				nsParts := strings.SplitN(nsName, "/", 2)
+				g.Expect(nsParts).To(HaveLen(2))
+				ns = nsParts[0]
+				name = nsParts[1]
+				found = true
+				break
+			}
+		}
+		g.Expect(found).To(BeTrue(), "no completed investigation with trigger type %s found", triggerType)
+	}, timeout, poll).Should(Succeed())
+	return ns, name
+}
+
 // getInvestigationField retrieves a jsonpath field from an Investigation CR.
 func getInvestigationField(namespace, name, jsonpath string) string {
 	out, err := runCmd("kubectl", "get", "investigation.detective.arcdetective.io", name,

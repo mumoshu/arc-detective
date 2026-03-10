@@ -34,10 +34,10 @@ var _ = Describe("ARC Detective Full E2E", Ordered, func() {
 		helmBin       string
 		kindCluster   string
 		defaultBranch string
-		runID         int64
+		runIDs        []int64
 	)
 
-	// dumpOnFailure is a helper that dumps diagnostics and fails with a message.
+	// dumpOnFailure dumps diagnostics and fails with a message.
 	dumpOnFailure := func(msg string, args ...interface{}) {
 		dumpDiagnostics(kindBin, kindCluster, detectiveNS, runnerNS)
 		Fail(fmt.Sprintf(msg, args...))
@@ -77,7 +77,6 @@ var _ = Describe("ARC Detective Full E2E", Ordered, func() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Default branch: %s\n", defaultBranch)
 
 		By("creating Kind cluster")
-		// Delete any leftover cluster first (best-effort)
 		_, _ = runCmd(kindBin, "delete", "cluster", "--name", kindCluster)
 		out := mustRunCmd(kindBin, "create", "cluster", "--name", kindCluster, "--wait", "120s")
 		_, _ = fmt.Fprintf(GinkgoWriter, "Kind cluster created: %s\n", out)
@@ -106,9 +105,6 @@ var _ = Describe("ARC Detective Full E2E", Ordered, func() {
 			"--from-literal=github_token="+ghToken)
 
 		By("installing ARC runner scale set via Helm")
-		// Use a values file to properly set the runner template with memory limits.
-		// Using --set with nested array notation (template.spec.containers[0]...) can
-		// override the chart's default template in unexpected ways. A values file is safer.
 		projectRoot := findProjectRoot()
 		valuesPath := filepath.Join(projectRoot, "test", "e2e-full", "testdata", "runner-values.yaml")
 		valuesContent := fmt.Sprintf(`githubConfigUrl: "https://github.com/%s/%s"
@@ -123,7 +119,7 @@ template:
         command: ["/home/runner/run.sh"]
         resources:
           limits:
-            memory: "64Mi"
+            memory: "256Mi"
 `, owner, repo)
 		err = os.WriteFile(valuesPath, []byte(valuesContent), 0644)
 		Expect(err).NotTo(HaveOccurred())
@@ -136,14 +132,12 @@ template:
 			"-f", valuesPath,
 			"--wait", "--timeout", "5m")
 		if installErr != nil {
-			// Dump Helm values and rendered manifests before failing
 			dumpHelmInfo(helmBin, arcReleaseName, runnerNS, arcVersion, valuesPath)
 			dumpOnFailure("Failed to install ARC runner scale set: %v\nOutput: %s", installErr, out)
 		}
 		_, _ = fmt.Fprintf(GinkgoWriter, "ARC runner scale set installed: %s\n", out)
 
 		By("verifying ARC listener pod is running")
-		// The listener pod is created in arc-systems namespace by the ARC controller
 		listenerPod, listenerErr := waitForPodWithLabelOrFail(arcSystemNS,
 			"actions.github.com/scale-set-name="+arcReleaseName,
 			2*time.Minute, 3*time.Second)
@@ -154,13 +148,9 @@ template:
 		_, _ = fmt.Fprintf(GinkgoWriter, "ARC listener pod running: %s\n", listenerPod)
 
 		By("checking ARC listener logs for successful registration")
-		// Give the listener a moment to register
 		time.Sleep(5 * time.Second)
 		listenerLogs, _ := runCmd("kubectl", "logs", listenerPod, "-n", arcSystemNS, "--tail=50")
 		_, _ = fmt.Fprintf(GinkgoWriter, "ARC listener logs:\n%s\n", listenerLogs)
-		if strings.Contains(listenerLogs, "error") || strings.Contains(listenerLogs, "failed") {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: ARC listener logs contain errors\n")
-		}
 
 		By("verifying AutoScalingRunnerSet exists")
 		arsOut, arsErr := runCmd("kubectl", "get", "autoscalingrunnersets.actions.github.com",
@@ -223,7 +213,19 @@ spec:
 		cmd := fmt.Sprintf("echo '%s' | kubectl apply -f -", configYAML)
 		mustRunCmd("bash", "-c", cmd)
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "Setup complete. Ready for test.\n")
+		By("pushing test workflow to repo")
+		templatePath := filepath.Join(projectRoot, "test", "e2e-full", "testdata", "test-workflow.yaml")
+		templateBytes, readErr := os.ReadFile(templatePath)
+		Expect(readErr).NotTo(HaveOccurred())
+		workflowContent := strings.ReplaceAll(string(templateBytes), "%RUNNER_LABEL%", arcReleaseName)
+		_, err = pushWorkflowFile(owner, repo, ghToken, workflowPath, workflowContent, defaultBranch)
+		Expect(err).NotTo(HaveOccurred(), "failed to push workflow file")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow pushed to %s\n", workflowPath)
+
+		// Let GitHub process the new workflow file
+		time.Sleep(5 * time.Second)
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "Setup complete. Ready for tests.\n")
 	})
 
 	AfterAll(func() {
@@ -233,12 +235,11 @@ spec:
 		}
 
 		By("cancelling any in-progress workflow runs")
-		if runID > 0 {
-			if err := cancelWorkflowRun(owner, repo, ghToken, runID); err != nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to cancel workflow run: %v\n", err)
+		for _, id := range runIDs {
+			if err := cancelWorkflowRun(owner, repo, ghToken, id); err != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to cancel workflow run %d: %v\n", id, err)
 			}
 		}
-		// Kind cluster cleanup is handled by DeferCleanup in BeforeAll
 	})
 
 	AfterEach(func() {
@@ -247,74 +248,169 @@ spec:
 		}
 	})
 
-	It("should detect OOMKilled runner pod and create a correct Investigation", func() {
-		By("reading test workflow template")
-		projectRoot := findProjectRoot()
-		templatePath := filepath.Join(projectRoot, "test", "e2e-full", "testdata", "test-workflow.yaml")
-		templateBytes, err := os.ReadFile(templatePath)
-		Expect(err).NotTo(HaveOccurred())
-
-		workflowContent := strings.ReplaceAll(string(templateBytes), "%RUNNER_LABEL%", arcReleaseName)
-
-		By("pushing test workflow to repo")
-		_, err = pushWorkflowFile(owner, repo, ghToken, workflowPath, workflowContent, defaultBranch)
-		Expect(err).NotTo(HaveOccurred(), "failed to push workflow file")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow pushed to %s\n", workflowPath)
-
-		// Small delay to let GitHub process the new workflow file
-		time.Sleep(5 * time.Second)
-
-		By("triggering workflow_dispatch")
-		testRunID := fmt.Sprintf("e2e-%d", time.Now().Unix())
-		dispatchTime := time.Now().Add(-5 * time.Second) // small buffer for clock skew
-		err = triggerWorkflowDispatch(owner, repo, ghToken, workflowFile, defaultBranch, map[string]string{
-			"run_id": testRunID,
+	// dispatchAndWaitForRun triggers a workflow dispatch and returns the run ID.
+	dispatchAndWaitForRun := func(failureMode string) int64 {
+		testRunID := fmt.Sprintf("e2e-%s-%d", failureMode, time.Now().Unix())
+		dispatchTime := time.Now().Add(-5 * time.Second)
+		err := triggerWorkflowDispatch(owner, repo, ghToken, workflowFile, defaultBranch, map[string]string{
+			"run_id":       testRunID,
+			"failure_mode": failureMode,
 		})
 		Expect(err).NotTo(HaveOccurred(), "failed to trigger workflow dispatch")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow dispatch triggered with run_id=%s\n", testRunID)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow dispatch triggered: run_id=%s failure_mode=%s\n", testRunID, failureMode)
 
-		By("waiting for workflow run to appear")
-		runID, err = waitForWorkflowRun(owner, repo, ghToken, workflowFile, dispatchTime, 2*time.Minute)
+		id, err := waitForWorkflowRun(owner, repo, ghToken, workflowFile, dispatchTime, 2*time.Minute)
 		Expect(err).NotTo(HaveOccurred(), "workflow run did not appear")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow run ID: %d\n", runID)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow run ID: %d\n", id)
+		runIDs = append(runIDs, id)
+		return id
+	}
 
-		By("waiting for runner pod to appear in arc-runners namespace")
-		podName := waitForPodWithLabel(runnerNS, "actions-ephemeral-runner=True", 5*time.Minute, 3*time.Second)
+	// knownPodNames tracks pods from previous tests so we can wait for new ones.
+	var knownPodNames []string
+
+	// waitForNewRunnerPod waits for a runner pod that is NOT in knownPodNames.
+	waitForNewRunnerPod := func(timeout, poll time.Duration) string {
+		var podName string
+		EventuallyWithOffset(1, func(g Gomega) {
+			out, err := runCmd("kubectl", "get", "pods",
+				"-l", "actions-ephemeral-runner=True",
+				"-n", runnerNS,
+				"-o", "jsonpath={.items[*].metadata.name}",
+				"--field-selector=status.phase!=Succeeded,status.phase!=Failed")
+			g.Expect(err).NotTo(HaveOccurred())
+			for _, name := range strings.Fields(out) {
+				known := false
+				for _, k := range knownPodNames {
+					if name == k {
+						known = true
+						break
+					}
+				}
+				if !known {
+					podName = name
+					return
+				}
+			}
+			g.Expect(false).To(BeTrue(), "no new runner pod found (known: %v, current: %s)", knownPodNames, out)
+		}, timeout, poll).Should(Succeed())
+		knownPodNames = append(knownPodNames, podName)
+		return podName
+	}
+
+	It("should detect OOMKilled runner pod and create Investigation with pod-oomkilled diagnosis", func() {
+		By("triggering workflow_dispatch with failure_mode=oom")
+		dispatchAndWaitForRun("oom")
+
+		By("waiting for runner pod to appear")
+		podName := waitForNewRunnerPod(5*time.Minute, 3*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod appeared: %s\n", podName)
 
 		By("waiting for runner pod to be Running")
 		waitForPodPhase(runnerNS, podName, "Running", 3*time.Minute, 2*time.Second)
-		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod is Running\n")
 
-		By("waiting for OOMKill (workflow writes 128M to /dev/shm with 64Mi limit)")
+		By("waiting for OOMKill (workflow allocates memory to exceed 256Mi limit)")
 		reason := waitForContainerTerminated(runnerNS, podName, 3*time.Minute, 2*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Container terminated with reason: %s\n", reason)
-		// Accept both OOMKilled reason and exit code 137
 		Expect(reason).To(SatisfyAny(
 			Equal("OOMKilled"),
-			Equal("Error"), // some runtimes report "Error" with exit code 137
+			Equal("Error"),
 		), "expected OOMKilled or Error termination reason, got %s", reason)
 
-		By("waiting for Investigation CR to reach Complete phase")
-		invNS, invName := waitForInvestigationComplete(5*time.Minute, 2*time.Second)
+		By("waiting for Investigation with trigger pod-oomkill to complete")
+		invNS, invName := waitForInvestigationWithTrigger("pod-oomkill", 5*time.Minute, 2*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
 
 		By("verifying Investigation diagnosis")
 		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Diagnosis failureType: %s\n", failureType)
-		Expect(failureType).To(Equal("pod-oomkilled"),
-			"expected diagnosis failureType 'pod-oomkilled', got '%s'", failureType)
+		Expect(failureType).To(Equal("pod-oomkilled"))
 
 		remediation := getInvestigationField(invNS, invName, "{.spec.diagnosis.remediation}")
-		Expect(remediation).To(ContainSubstring("memory"),
-			"expected remediation to mention memory, got: %s", remediation)
+		Expect(remediation).To(ContainSubstring("memory"))
 
-		triggerType := getInvestigationField(invNS, invName, "{.spec.trigger.type}")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Trigger type: %s\n", triggerType)
-		Expect(triggerType).To(Equal("pod-oomkill"),
-			"expected trigger type 'pod-oomkill', got '%s'", triggerType)
+		By("cancelling OOM workflow run on GitHub")
+		// The OOM-killed runner never reported back to GitHub, so the run
+		// is stuck in_progress. Cancel it so GitHub frees the runner slot.
+		for _, id := range runIDs {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Cancelling workflow run %d\n", id)
+			_ = cancelWorkflowRun(owner, repo, ghToken, id)
+		}
 
-		_, _ = fmt.Fprintf(GinkgoWriter, "Full e2e test passed! OOMKill detected and diagnosed correctly.\n")
+		By("cleaning up stuck EphemeralRunner to free runner slot")
+		// ARC doesn't auto-clean up failed EphemeralRunners, and they have
+		// finalizers that block deletion. Remove finalizers then delete.
+		erOut, _ := runCmd("kubectl", "get", "ephemeralrunners.actions.github.com",
+			"-n", runnerNS, "-o", "jsonpath={.items[*].metadata.name}")
+		for _, erName := range strings.Fields(erOut) {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Removing finalizers and deleting EphemeralRunner %s\n", erName)
+			_, _ = runCmd("kubectl", "patch", "ephemeralrunner.actions.github.com", erName,
+				"-n", runnerNS, "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`)
+			_, _ = runCmd("kubectl", "delete", "ephemeralrunner.actions.github.com", erName,
+				"-n", runnerNS, "--wait=false")
+		}
+		// Also clean up the pod directly (it may have its own finalizers)
+		_, _ = runCmd("kubectl", "delete", "pods", "-l", "actions-ephemeral-runner=True",
+			"-n", runnerNS, "--force", "--grace-period=0")
+		// Wait for the pod to actually be gone
+		Eventually(func() string {
+			out, _ := runCmd("kubectl", "get", "pods",
+				"-l", "actions-ephemeral-runner=True",
+				"-n", runnerNS,
+				"-o", "jsonpath={.items[*].metadata.name}")
+			return strings.TrimSpace(out)
+		}, 2*time.Minute, 3*time.Second).Should(BeEmpty(), "runner pod not cleaned up")
+
+		// Give GitHub and ARC time to reconcile after cancellation
+		time.Sleep(10 * time.Second)
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "OOMKill test passed.\n")
+	})
+
+	It("should detect failed GitHub Actions job via GitHubPoller and create Investigation with job-failed trigger", func() {
+		By("triggering workflow_dispatch with failure_mode=exit1")
+		dispatchAndWaitForRun("exit1")
+
+		By("waiting for new runner pod to appear")
+		podName := waitForNewRunnerPod(5*time.Minute, 3*time.Second)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod appeared: %s\n", podName)
+
+		By("waiting for runner pod to be Running")
+		waitForPodPhase(runnerNS, podName, "Running", 3*time.Minute, 2*time.Second)
+
+		By("waiting for runner pod to complete (exit 1 causes clean pod exit)")
+		// The runner agent handles step failures gracefully — it reports the
+		// failure to GitHub and exits with code 0. The pod terminates normally.
+		Eventually(func() bool {
+			out, _ := runCmd("kubectl", "get", "pod", podName, "-n", runnerNS,
+				"-o", "jsonpath={.status.phase}")
+			return out == "Succeeded" || out == "Failed" || out == ""
+		}, 3*time.Minute, 3*time.Second).Should(BeTrue(), "runner pod did not complete")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod completed\n")
+
+		By("waiting for Investigation with trigger job-failed to complete")
+		// The GitHubPoller polls every 3s and checks for recently completed
+		// runs with conclusion=failure. It creates an Investigation in the
+		// DetectiveConfig namespace (arc-detective-system).
+		invNS, invName := waitForInvestigationWithTrigger("job-failed", 5*time.Minute, 2*time.Second)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
+
+		By("verifying Investigation has workflow run and job details")
+		workflowRunID := getInvestigationField(invNS, invName, "{.spec.workflowRun.id}")
+		Expect(workflowRunID).NotTo(BeEmpty(), "expected workflowRun.id to be set")
+		_, _ = fmt.Fprintf(GinkgoWriter, "WorkflowRun ID in investigation: %s\n", workflowRunID)
+
+		jobConclusion := getInvestigationField(invNS, invName, "{.spec.job.conclusion}")
+		Expect(jobConclusion).To(Equal("failure"),
+			"expected job conclusion 'failure', got '%s'", jobConclusion)
+
+		jobName := getInvestigationField(invNS, invName, "{.spec.job.name}")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Job name: %s, conclusion: %s\n", jobName, jobConclusion)
+
+		triggerSource := getInvestigationField(invNS, invName, "{.spec.trigger.source}")
+		Expect(triggerSource).To(ContainSubstring("github/"),
+			"expected trigger source to contain 'github/', got '%s'", triggerSource)
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "Job-failed test passed.\n")
 	})
 })
 

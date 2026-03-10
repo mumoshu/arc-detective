@@ -218,8 +218,12 @@ func (p *GitHubPoller) createJobInvestigation(ctx context.Context, owner, repo, 
 			},
 		},
 	}
+	if err := p.Create(ctx, inv); err != nil {
+		return err
+	}
+	// Status subresource requires a separate update after creation
 	inv.Status.Phase = "Collecting"
-	return p.Create(ctx, inv)
+	return p.Status().Update(ctx, inv)
 }
 
 // Ensure GitHubPoller implements manager.Runnable

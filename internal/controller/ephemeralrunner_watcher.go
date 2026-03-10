@@ -177,8 +177,12 @@ func (r *EphemeralRunnerWatcher) createInvestigation(ctx context.Context, er *un
 			},
 		},
 	}
+	if err := r.Create(ctx, inv); err != nil {
+		return err
+	}
+	// Status subresource requires a separate update after creation
 	inv.Status.Phase = "Collecting"
-	return r.Create(ctx, inv)
+	return r.Status().Update(ctx, inv)
 }
 
 func (r *EphemeralRunnerWatcher) SetupWithManager(mgr ctrl.Manager) error {
