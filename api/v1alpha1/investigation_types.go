@@ -38,8 +38,8 @@ type InvestigationSpec struct {
 }
 
 type InvestigationTrigger struct {
-	// Type classifies the trigger: "runner-stuck", "job-failed", "pod-crash",
-	// "pod-oomkill", "pod-stuck-terminating".
+	// Type classifies the trigger: "pod-oomkill", "pod-crash", "pod-deletion",
+	// "runner-stuck", "job-failed", "job-stuck-queued".
 	Type string `json:"type"`
 	// Source identifies the resource that triggered the investigation.
 	Source string `json:"source"`

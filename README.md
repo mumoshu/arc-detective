@@ -9,7 +9,7 @@ arc-detective watches runner pods, EphemeralRunner CRs, and GitHub Actions job s
 | Failure type | Trigger | Remediation hint |
 |---|---|---|
 | `pod-oomkilled` | Container OOMKilled or exit code 137 | Increase memory limits on the runner pod template |
-| `pod-crashloop` | Container restart count >= 3 or CrashLoopBackOff | Check runner entrypoint script for post-job errors |
+| `pod-crashed` | Container exited with non-zero exit code | Check collected logs for crash reason (broken entrypoint, missing binaries) |
 | `pod-stuck-terminating` | Pod stuck in Terminating phase | Force-delete the pod, check node autoscaler |
 | `pod-init-timeout` | ImagePullBackOff or ErrImagePull during init | Pre-pull runner images or use a registry mirror |
 | `runner-stuck-running` | EphemeralRunner still Running after job completed | Delete the stuck EphemeralRunner, check ARC controller |
@@ -204,7 +204,7 @@ kubectl get investigation pod-my-runner-abc123-runner-x7k9z -n arc-runners \
 
 - **`pod-oomkilled`** — Update your ARC runner scale set Helm values to increase `template.spec.containers[0].resources.limits.memory`. If only specific workflows need more memory, consider a dedicated runner scale set with higher limits for those jobs.
 
-- **`pod-crashloop`** — Check the collected logs at `spec.logPaths` for the crash reason. Common causes: broken post-job hooks, missing binaries in the runner image, or misconfigured entrypoint scripts.
+- **`pod-crashed`** — Check the collected logs at `spec.logPaths` for the crash reason. The exit code is in `spec.pod.containerStatuses[].exitCode`. Common causes: broken entrypoint scripts, missing binaries in the runner image, or incompatible runner versions.
 
 - **`pod-stuck-terminating`** — The pod's finalizers are preventing cleanup. Check `spec.pod.conditions` and `spec.pod.events` for the cause. Usually a node issue or a stuck volume unmount. Force-delete with `kubectl delete pod <name> --grace-period=0 --force` if needed.
 

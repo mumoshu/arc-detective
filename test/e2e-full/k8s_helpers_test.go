@@ -79,6 +79,24 @@ func waitForPodPhase(namespace, podName, phase string, timeout, poll time.Durati
 	}, timeout, poll).Should(Succeed())
 }
 
+// waitForPodPhaseAny waits until the named pod reaches any of the given phases.
+func waitForPodPhaseAny(namespace, podName string, phases []string, timeout, poll time.Duration) {
+	EventuallyWithOffset(1, func(g Gomega) {
+		out, err := runCmd("kubectl", "get", "pod", podName,
+			"-n", namespace,
+			"-o", "jsonpath={.status.phase}")
+		g.Expect(err).NotTo(HaveOccurred())
+		matched := false
+		for _, p := range phases {
+			if out == p {
+				matched = true
+				break
+			}
+		}
+		g.Expect(matched).To(BeTrue(), "pod %s phase is %s, want one of %v", podName, out, phases)
+	}, timeout, poll).Should(Succeed())
+}
+
 // waitForContainerTerminated waits until the first container in the pod is terminated.
 // Returns the termination reason.
 func waitForContainerTerminated(namespace, podName string, timeout, poll time.Duration) string {

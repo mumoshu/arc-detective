@@ -17,7 +17,8 @@ jobs:
         run: |
           echo "Test run: ${{ github.event.inputs.run_id }}"
           echo "Failure mode: ${{ github.event.inputs.failure_mode }}"
-          if [ "${{ github.event.inputs.failure_mode }}" = "oom" ]; then
+          MODE="${{ github.event.inputs.failure_mode }}"
+          if [ "$MODE" = "oom" ]; then
             echo "Allocating memory to trigger OOM..."
             # Allocate real RSS memory exceeding the 256Mi cgroup limit.
             # Use a bash array to hold large strings in memory.

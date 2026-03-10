@@ -149,10 +149,10 @@ func (r *PodWatcher) detectAnomaly(pod *corev1.Pod) string {
 		if cs.State.Terminated != nil && cs.State.Terminated.Reason == "OOMKilled" {
 			return "pod-oomkill"
 		}
-		if cs.RestartCount >= 3 {
-			return "pod-crash"
-		}
-		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+		// Non-zero exit (excluding 137/OOMKill handled above).
+		// ARC ephemeral runners use restartPolicy: Never, so they never
+		// restart — a non-zero exit means the runner process crashed.
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
 			return "pod-crash"
 		}
 	}

@@ -360,8 +360,16 @@ spec:
 			return strings.TrimSpace(out)
 		}, 2*time.Minute, 3*time.Second).Should(BeEmpty(), "runner pod not cleaned up")
 
-		// Give GitHub and ARC time to reconcile after cancellation
-		time.Sleep(10 * time.Second)
+		// Give ARC listener time to reconcile runner slot availability.
+		// After force-deleting the ER and pod, ARC needs to re-sync with
+		// GitHub and mark the runner slot as free. This takes 30-60s.
+		By("waiting for ARC to reconcile after cleanup")
+		time.Sleep(30 * time.Second)
+
+		// Verify no EphemeralRunners remain (confirms ARC reconciled)
+		erCheck, _ := runCmd("kubectl", "get", "ephemeralrunners.actions.github.com",
+			"-n", runnerNS, "-o", "jsonpath={.items[*].metadata.name}")
+		_, _ = fmt.Fprintf(GinkgoWriter, "EphemeralRunners after cleanup: %q\n", erCheck)
 
 		_, _ = fmt.Fprintf(GinkgoWriter, "OOMKill test passed.\n")
 	})
@@ -377,21 +385,14 @@ spec:
 		By("waiting for runner pod to be Running")
 		waitForPodPhase(runnerNS, podName, "Running", 3*time.Minute, 2*time.Second)
 
-		By("waiting for runner pod to complete (exit 1 causes clean pod exit)")
-		// The runner agent handles step failures gracefully — it reports the
-		// failure to GitHub and exits with code 0. The pod terminates normally.
-		Eventually(func() bool {
-			out, _ := runCmd("kubectl", "get", "pod", podName, "-n", runnerNS,
-				"-o", "jsonpath={.status.phase}")
-			return out == "Succeeded" || out == "Failed" || out == ""
-		}, 3*time.Minute, 3*time.Second).Should(BeTrue(), "runner pod did not complete")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod completed\n")
-
 		By("waiting for Investigation with trigger job-failed to complete")
-		// The GitHubPoller polls every 3s and checks for recently completed
-		// runs with conclusion=failure. It creates an Investigation in the
-		// DetectiveConfig namespace (arc-detective-system).
-		invNS, invName := waitForInvestigationWithTrigger("job-failed", 5*time.Minute, 2*time.Second)
+		// The runner agent handles step failures gracefully — it reports the
+		// failure to GitHub and exits with code 0. ARC then deletes the pod
+		// (it may never reach Succeeded/Failed phase). The GitHubPoller
+		// independently detects the job failure on GitHub's side.
+		// Use 7-minute timeout since the runner may need time to pull its
+		// image and execute the step.
+		invNS, invName := waitForInvestigationWithTrigger("job-failed", 7*time.Minute, 2*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
 
 		By("verifying Investigation has workflow run and job details")
@@ -406,11 +407,63 @@ spec:
 		jobName := getInvestigationField(invNS, invName, "{.spec.job.name}")
 		_, _ = fmt.Fprintf(GinkgoWriter, "Job name: %s, conclusion: %s\n", jobName, jobConclusion)
 
+		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")
+		Expect(failureType).To(Equal("job-failed"),
+			"expected diagnosis.failureType 'job-failed', got '%s'", failureType)
+
 		triggerSource := getInvestigationField(invNS, invName, "{.spec.trigger.source}")
 		Expect(triggerSource).To(ContainSubstring("github/"),
 			"expected trigger source to contain 'github/', got '%s'", triggerSource)
 
 		_, _ = fmt.Fprintf(GinkgoWriter, "Job-failed test passed.\n")
+	})
+
+	It("should detect crashed runner pod and create Investigation with pod-crashed diagnosis", func() {
+		// In real ARC, pod-crash (non-zero exit, non-OOM) happens when:
+		// - The runner image is misconfigured (bad entrypoint)
+		// - The node evicts the pod
+		// - The kubelet kills the container
+		// Since we can't simulate these from within a workflow step (the
+		// runner agent always exits 0), we create a synthetic pod with the
+		// ARC runner label that exits with a non-zero code. This directly
+		// tests PodWatcher's crash detection path.
+
+		By("creating a synthetic runner pod that exits with code 1")
+		crashPodName := fmt.Sprintf("crash-test-%d", time.Now().Unix())
+		podYAML := fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    actions-ephemeral-runner: "True"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: runner
+      image: busybox
+      command: ["sh", "-c", "echo 'Simulating runner crash'; sleep 2; exit 1"]
+`, crashPodName, runnerNS)
+		cmd := fmt.Sprintf("echo '%s' | kubectl apply -f -", podYAML)
+		mustRunCmd("bash", "-c", cmd)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Synthetic crash pod created: %s\n", crashPodName)
+
+		By("waiting for container to terminate with non-zero exit")
+		reason := waitForContainerTerminated(runnerNS, crashPodName, 2*time.Minute, 2*time.Second)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Container terminated with reason: %s\n", reason)
+
+		By("waiting for Investigation with trigger pod-crash to complete")
+		invNS, invName := waitForInvestigationWithTrigger("pod-crash", 3*time.Minute, 2*time.Second)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
+
+		By("verifying Investigation diagnosis")
+		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")
+		Expect(failureType).To(Equal("pod-crashed"))
+
+		remediation := getInvestigationField(invNS, invName, "{.spec.diagnosis.remediation}")
+		Expect(remediation).To(ContainSubstring("crash reason"))
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "Pod-crash test passed.\n")
 	})
 })
 

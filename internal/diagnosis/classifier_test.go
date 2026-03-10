@@ -63,6 +63,16 @@ func TestClassifyRunnerStuckFailed(t *testing.T) {
 	assert.Equal(t, "runner-stuck-failed", diag.FailureType)
 }
 
+func TestClassifyJobFailed(t *testing.T) {
+	spec := &v1alpha1.InvestigationSpec{
+		Job: &v1alpha1.JobInfo{Status: "completed", Conclusion: "failure", Name: "build"},
+	}
+	diag := Classify(spec)
+	assert.NotNil(t, diag)
+	assert.Equal(t, "job-failed", diag.FailureType)
+	assert.Contains(t, diag.Remediation, "step logs")
+}
+
 func TestClassifyJobStuckQueued(t *testing.T) {
 	spec := &v1alpha1.InvestigationSpec{
 		Job:             &v1alpha1.JobInfo{Status: "queued", Name: "deploy"},
@@ -74,20 +84,20 @@ func TestClassifyJobStuckQueued(t *testing.T) {
 	assert.Contains(t, diag.Remediation, "AutoScalingRunnerSet")
 }
 
-func TestClassifyPodCrashLoop(t *testing.T) {
+func TestClassifyPodCrashed(t *testing.T) {
 	spec := &v1alpha1.InvestigationSpec{
 		Pod: &v1alpha1.PodInfo{
 			Name: "runner-crash", Namespace: "ns1",
 			ContainerStatuses: []v1alpha1.ContainerStatusInfo{{
-				Name: "runner", RestartCount: 3,
-				State: "waiting", Reason: "CrashLoopBackOff",
+				Name: "runner", State: "terminated",
+				ExitCode: ptr(int32(1)),
 			}},
 		},
-		EphemeralRunner: &v1alpha1.EphemeralRunnerInfo{Phase: "Failed"},
 	}
 	diag := Classify(spec)
 	assert.NotNil(t, diag)
-	assert.Equal(t, "pod-crashloop", diag.FailureType)
+	assert.Equal(t, "pod-crashed", diag.FailureType)
+	assert.Contains(t, diag.Remediation, "crash reason")
 }
 
 func TestClassifyPodStuckTerminating(t *testing.T) {

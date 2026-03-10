@@ -94,7 +94,9 @@ func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace stri
 	for _, status := range []string{"in_progress", "queued"} {
 		runs, err := p.ghClient.ListWorkflowRuns(ctx, owner, repo, gh.ListRunsOpts{Status: status})
 		if err != nil {
-			return fmt.Errorf("listing %s runs: %w", status, err)
+			// Log and continue — don't let a transient error block completed run checks
+			logger.Error(err, "Failed to list runs", "status", status)
+			continue
 		}
 
 		for _, run := range runs {
@@ -119,8 +121,8 @@ func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace stri
 		if run.Conclusion != "failure" {
 			continue
 		}
-		// Only look at recent failures (last poll interval * 2)
-		if time.Since(run.UpdatedAt) > p.pollInterval*2 {
+		// Only look at recent failures (last 5 minutes)
+		if time.Since(run.UpdatedAt) > 5*time.Minute {
 			continue
 		}
 		jobs, err := p.ghClient.ListJobsForRun(ctx, owner, repo, run.ID)

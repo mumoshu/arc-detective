@@ -35,20 +35,20 @@ var KnownPatterns = []FailurePattern{
 		Remediation: "Increase memory limits on the runner pod template.",
 	},
 	{
-		Type:        "pod-crashloop",
-		Description: "Runner pod in CrashLoopBackOff",
+		Type:        "pod-crashed",
+		Description: "Runner pod exited with non-zero exit code",
 		Match: func(spec *v1alpha1.InvestigationSpec) bool {
 			if spec.Pod == nil {
 				return false
 			}
 			for _, cs := range spec.Pod.ContainerStatuses {
-				if cs.RestartCount >= 3 || cs.Reason == "CrashLoopBackOff" {
+				if cs.State == "terminated" && cs.ExitCode != nil && *cs.ExitCode != 0 && !cs.OOMKilled {
 					return true
 				}
 			}
 			return false
 		},
-		Remediation: "Delete the pod. Check runner entrypoint script for post-job errors.",
+		Remediation: "Check collected logs for the crash reason. Common causes: broken entrypoint scripts, missing binaries in the runner image, or incompatible runner versions.",
 	},
 	{
 		Type:        "pod-stuck-terminating",
@@ -108,6 +108,17 @@ var KnownPatterns = []FailurePattern{
 			return spec.EphemeralRunner.Phase == "Failed"
 		},
 		Remediation: "Delete the stuck EphemeralRunner. This is a known ARC issue.",
+	},
+	{
+		Type:        "job-failed",
+		Description: "GitHub Actions job failed",
+		Match: func(spec *v1alpha1.InvestigationSpec) bool {
+			if spec.Job == nil {
+				return false
+			}
+			return spec.Job.Status == "completed" && spec.Job.Conclusion == "failure"
+		},
+		Remediation: "Check workflow step logs for the failure reason. The job step exited with a non-zero code.",
 	},
 	{
 		Type:        "job-stuck-queued",
