@@ -112,30 +112,6 @@ func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace stri
 		}
 	}
 
-	// Also check completed/failed runs for recent failures
-	runs, err := p.ghClient.ListWorkflowRuns(ctx, owner, repo, gh.ListRunsOpts{Status: "completed"})
-	if err != nil {
-		return fmt.Errorf("listing completed runs: %w", err)
-	}
-	for _, run := range runs {
-		if run.Conclusion != "failure" {
-			continue
-		}
-		// Only look at recent failures (last 5 minutes)
-		if time.Since(run.UpdatedAt) > 5*time.Minute {
-			continue
-		}
-		jobs, err := p.ghClient.ListJobsForRun(ctx, owner, repo, run.ID)
-		if err != nil {
-			continue
-		}
-		for _, job := range jobs {
-			if job.Conclusion == "failure" {
-				p.checkJob(ctx, owner, repo, namespace, &run, &job)
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -149,10 +125,6 @@ func (p *GitHubPoller) checkJob(ctx context.Context, owner, repo, namespace stri
 		return
 	}
 
-	// Detect failed job
-	if job.Status == "completed" && job.Conclusion == "failure" {
-		_ = p.createJobInvestigation(ctx, owner, repo, namespace, run, job, "job-failed")
-	}
 }
 
 func (p *GitHubPoller) createJobInvestigation(ctx context.Context, owner, repo, namespace string, run *gh.WorkflowRun, job *gh.Job, triggerType string) error {

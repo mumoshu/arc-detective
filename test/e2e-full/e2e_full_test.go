@@ -34,7 +34,6 @@ var _ = Describe("ARC Detective Full E2E", Ordered, func() {
 		helmBin       string
 		kindCluster   string
 		defaultBranch string
-		runIDs        []int64
 	)
 
 	// dumpOnFailure dumps diagnostics and fails with a message.
@@ -233,13 +232,6 @@ spec:
 		if err := deleteWorkflowFile(owner, repo, ghToken, workflowPath, defaultBranch); err != nil {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to delete workflow file: %v\n", err)
 		}
-
-		By("cancelling any in-progress workflow runs")
-		for _, id := range runIDs {
-			if err := cancelWorkflowRun(owner, repo, ghToken, id); err != nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to cancel workflow run %d: %v\n", id, err)
-			}
-		}
 	})
 
 	AfterEach(func() {
@@ -249,61 +241,33 @@ spec:
 	})
 
 	// dispatchAndWaitForRun triggers a workflow dispatch and returns the run ID.
-	dispatchAndWaitForRun := func(failureMode string) int64 {
-		testRunID := fmt.Sprintf("e2e-%s-%d", failureMode, time.Now().Unix())
+	dispatchAndWaitForRun := func() int64 {
+		testRunID := fmt.Sprintf("e2e-%d", time.Now().Unix())
 		dispatchTime := time.Now().Add(-5 * time.Second)
 		err := triggerWorkflowDispatch(owner, repo, ghToken, workflowFile, defaultBranch, map[string]string{
-			"run_id":       testRunID,
-			"failure_mode": failureMode,
+			"run_id": testRunID,
 		})
 		Expect(err).NotTo(HaveOccurred(), "failed to trigger workflow dispatch")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow dispatch triggered: run_id=%s failure_mode=%s\n", testRunID, failureMode)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow dispatch triggered: run_id=%s\n", testRunID)
 
 		id, err := waitForWorkflowRun(owner, repo, ghToken, workflowFile, dispatchTime, 2*time.Minute)
 		Expect(err).NotTo(HaveOccurred(), "workflow run did not appear")
 		_, _ = fmt.Fprintf(GinkgoWriter, "Workflow run ID: %d\n", id)
-		runIDs = append(runIDs, id)
 		return id
 	}
 
-	// knownPodNames tracks pods from previous tests so we can wait for new ones.
-	var knownPodNames []string
-
-	// waitForNewRunnerPod waits for a runner pod that is NOT in knownPodNames.
-	waitForNewRunnerPod := func(timeout, poll time.Duration) string {
-		var podName string
-		EventuallyWithOffset(1, func(g Gomega) {
-			out, err := runCmd("kubectl", "get", "pods",
-				"-l", "actions-ephemeral-runner=True",
-				"-n", runnerNS,
-				"-o", "jsonpath={.items[*].metadata.name}",
-				"--field-selector=status.phase!=Succeeded,status.phase!=Failed")
-			g.Expect(err).NotTo(HaveOccurred())
-			for _, name := range strings.Fields(out) {
-				known := false
-				for _, k := range knownPodNames {
-					if name == k {
-						known = true
-						break
-					}
-				}
-				if !known {
-					podName = name
-					return
-				}
-			}
-			g.Expect(false).To(BeTrue(), "no new runner pod found (known: %v, current: %s)", knownPodNames, out)
-		}, timeout, poll).Should(Succeed())
-		knownPodNames = append(knownPodNames, podName)
-		return podName
-	}
-
 	It("should detect OOMKilled runner pod and create Investigation with pod-oomkilled diagnosis", func() {
-		By("triggering workflow_dispatch with failure_mode=oom")
-		dispatchAndWaitForRun("oom")
+		By("triggering workflow_dispatch")
+		runID := dispatchAndWaitForRun()
+		DeferCleanup(func() {
+			By("cancelling OOM test workflow run")
+			if err := cancelWorkflowRun(owner, repo, ghToken, runID); err != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to cancel workflow run %d: %v\n", runID, err)
+			}
+		})
 
 		By("waiting for runner pod to appear")
-		podName := waitForNewRunnerPod(5*time.Minute, 3*time.Second)
+		podName := waitForPodWithLabel(runnerNS, "actions-ephemeral-runner=True", 5*time.Minute, 3*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod appeared: %s\n", podName)
 
 		By("waiting for runner pod to be Running")
@@ -320,6 +284,10 @@ spec:
 		By("waiting for Investigation with trigger pod-oomkill to complete")
 		invNS, invName := waitForInvestigationWithTrigger("pod-oomkill", 5*time.Minute, 2*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
+		DeferCleanup(func() {
+			By("cleaning up OOM Investigation CR")
+			_, _ = runCmd("kubectl", "delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
+		})
 
 		By("verifying Investigation diagnosis")
 		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")
@@ -328,94 +296,7 @@ spec:
 		remediation := getInvestigationField(invNS, invName, "{.spec.diagnosis.remediation}")
 		Expect(remediation).To(ContainSubstring("memory"))
 
-		By("cancelling OOM workflow run on GitHub")
-		// The OOM-killed runner never reported back to GitHub, so the run
-		// is stuck in_progress. Cancel it so GitHub frees the runner slot.
-		for _, id := range runIDs {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Cancelling workflow run %d\n", id)
-			_ = cancelWorkflowRun(owner, repo, ghToken, id)
-		}
-
-		By("cleaning up stuck EphemeralRunner to free runner slot")
-		// ARC doesn't auto-clean up failed EphemeralRunners, and they have
-		// finalizers that block deletion. Remove finalizers then delete.
-		erOut, _ := runCmd("kubectl", "get", "ephemeralrunners.actions.github.com",
-			"-n", runnerNS, "-o", "jsonpath={.items[*].metadata.name}")
-		for _, erName := range strings.Fields(erOut) {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Removing finalizers and deleting EphemeralRunner %s\n", erName)
-			_, _ = runCmd("kubectl", "patch", "ephemeralrunner.actions.github.com", erName,
-				"-n", runnerNS, "--type=merge", "-p", `{"metadata":{"finalizers":[]}}`)
-			_, _ = runCmd("kubectl", "delete", "ephemeralrunner.actions.github.com", erName,
-				"-n", runnerNS, "--wait=false")
-		}
-		// Also clean up the pod directly (it may have its own finalizers)
-		_, _ = runCmd("kubectl", "delete", "pods", "-l", "actions-ephemeral-runner=True",
-			"-n", runnerNS, "--force", "--grace-period=0")
-		// Wait for the pod to actually be gone
-		Eventually(func() string {
-			out, _ := runCmd("kubectl", "get", "pods",
-				"-l", "actions-ephemeral-runner=True",
-				"-n", runnerNS,
-				"-o", "jsonpath={.items[*].metadata.name}")
-			return strings.TrimSpace(out)
-		}, 2*time.Minute, 3*time.Second).Should(BeEmpty(), "runner pod not cleaned up")
-
-		// Give ARC listener time to reconcile runner slot availability.
-		// After force-deleting the ER and pod, ARC needs to re-sync with
-		// GitHub and mark the runner slot as free. This takes 30-60s.
-		By("waiting for ARC to reconcile after cleanup")
-		time.Sleep(30 * time.Second)
-
-		// Verify no EphemeralRunners remain (confirms ARC reconciled)
-		erCheck, _ := runCmd("kubectl", "get", "ephemeralrunners.actions.github.com",
-			"-n", runnerNS, "-o", "jsonpath={.items[*].metadata.name}")
-		_, _ = fmt.Fprintf(GinkgoWriter, "EphemeralRunners after cleanup: %q\n", erCheck)
-
 		_, _ = fmt.Fprintf(GinkgoWriter, "OOMKill test passed.\n")
-	})
-
-	It("should detect failed GitHub Actions job via GitHubPoller and create Investigation with job-failed trigger", func() {
-		By("triggering workflow_dispatch with failure_mode=exit1")
-		dispatchAndWaitForRun("exit1")
-
-		By("waiting for new runner pod to appear")
-		podName := waitForNewRunnerPod(5*time.Minute, 3*time.Second)
-		_, _ = fmt.Fprintf(GinkgoWriter, "Runner pod appeared: %s\n", podName)
-
-		By("waiting for runner pod to be Running")
-		waitForPodPhase(runnerNS, podName, "Running", 3*time.Minute, 2*time.Second)
-
-		By("waiting for Investigation with trigger job-failed to complete")
-		// The runner agent handles step failures gracefully — it reports the
-		// failure to GitHub and exits with code 0. ARC then deletes the pod
-		// (it may never reach Succeeded/Failed phase). The GitHubPoller
-		// independently detects the job failure on GitHub's side.
-		// Use 7-minute timeout since the runner may need time to pull its
-		// image and execute the step.
-		invNS, invName := waitForInvestigationWithTrigger("job-failed", 7*time.Minute, 2*time.Second)
-		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
-
-		By("verifying Investigation has workflow run and job details")
-		workflowRunID := getInvestigationField(invNS, invName, "{.spec.workflowRun.id}")
-		Expect(workflowRunID).NotTo(BeEmpty(), "expected workflowRun.id to be set")
-		_, _ = fmt.Fprintf(GinkgoWriter, "WorkflowRun ID in investigation: %s\n", workflowRunID)
-
-		jobConclusion := getInvestigationField(invNS, invName, "{.spec.job.conclusion}")
-		Expect(jobConclusion).To(Equal("failure"),
-			"expected job conclusion 'failure', got '%s'", jobConclusion)
-
-		jobName := getInvestigationField(invNS, invName, "{.spec.job.name}")
-		_, _ = fmt.Fprintf(GinkgoWriter, "Job name: %s, conclusion: %s\n", jobName, jobConclusion)
-
-		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")
-		Expect(failureType).To(Equal("job-failed"),
-			"expected diagnosis.failureType 'job-failed', got '%s'", failureType)
-
-		triggerSource := getInvestigationField(invNS, invName, "{.spec.trigger.source}")
-		Expect(triggerSource).To(ContainSubstring("github/"),
-			"expected trigger source to contain 'github/', got '%s'", triggerSource)
-
-		_, _ = fmt.Fprintf(GinkgoWriter, "Job-failed test passed.\n")
 	})
 
 	It("should detect crashed runner pod and create Investigation with pod-crashed diagnosis", func() {
@@ -447,6 +328,10 @@ spec:
 		cmd := fmt.Sprintf("echo '%s' | kubectl apply -f -", podYAML)
 		mustRunCmd("bash", "-c", cmd)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Synthetic crash pod created: %s\n", crashPodName)
+		DeferCleanup(func() {
+			By("cleaning up synthetic crash pod")
+			_, _ = runCmd("kubectl", "delete", "pod", crashPodName, "-n", runnerNS, "--ignore-not-found")
+		})
 
 		By("waiting for container to terminate with non-zero exit")
 		reason := waitForContainerTerminated(runnerNS, crashPodName, 2*time.Minute, 2*time.Second)
@@ -455,6 +340,10 @@ spec:
 		By("waiting for Investigation with trigger pod-crash to complete")
 		invNS, invName := waitForInvestigationWithTrigger("pod-crash", 3*time.Minute, 2*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation complete: %s/%s\n", invNS, invName)
+		DeferCleanup(func() {
+			By("cleaning up crash Investigation CR")
+			_, _ = runCmd("kubectl", "delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
+		})
 
 		By("verifying Investigation diagnosis")
 		failureType := getInvestigationField(invNS, invName, "{.spec.diagnosis.failureType}")

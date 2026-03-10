@@ -63,16 +63,6 @@ func TestClassifyRunnerStuckFailed(t *testing.T) {
 	assert.Equal(t, "runner-stuck-failed", diag.FailureType)
 }
 
-func TestClassifyJobFailed(t *testing.T) {
-	spec := &v1alpha1.InvestigationSpec{
-		Job: &v1alpha1.JobInfo{Status: "completed", Conclusion: "failure", Name: "build"},
-	}
-	diag := Classify(spec)
-	assert.NotNil(t, diag)
-	assert.Equal(t, "job-failed", diag.FailureType)
-	assert.Contains(t, diag.Remediation, "step logs")
-}
-
 func TestClassifyJobStuckQueued(t *testing.T) {
 	spec := &v1alpha1.InvestigationSpec{
 		Job:             &v1alpha1.JobInfo{Status: "queued", Name: "deploy"},

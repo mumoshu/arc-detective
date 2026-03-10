@@ -110,17 +110,6 @@ var KnownPatterns = []FailurePattern{
 		Remediation: "Delete the stuck EphemeralRunner. This is a known ARC issue.",
 	},
 	{
-		Type:        "job-failed",
-		Description: "GitHub Actions job failed",
-		Match: func(spec *v1alpha1.InvestigationSpec) bool {
-			if spec.Job == nil {
-				return false
-			}
-			return spec.Job.Status == "completed" && spec.Job.Conclusion == "failure"
-		},
-		Remediation: "Check workflow step logs for the failure reason. The job step exited with a non-zero code.",
-	},
-	{
 		Type:        "job-stuck-queued",
 		Description: "GitHub job stuck queued with no viable runner",
 		Match: func(spec *v1alpha1.InvestigationSpec) bool {
