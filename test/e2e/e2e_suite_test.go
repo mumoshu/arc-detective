@@ -38,16 +38,79 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
 	setupCertManager()
+
+	By("creating manager namespace")
+	cmd = exec.Command("bash", "-c", fmt.Sprintf("kubectl create ns %s --dry-run=client -o yaml | kubectl apply -f -", namespace))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to create namespace")
+
+	By("labeling the namespace to enforce the restricted security policy")
+	cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		"pod-security.kubernetes.io/enforce=restricted")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+	By("installing ARC EphemeralRunner CRD (stub)")
+	cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/ephemeralrunner-crd.yaml")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install EphemeralRunner CRD")
+
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+
+	By("deploying the controller-manager")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+	By("patching controller deployment with log storage volume")
+	patchJSON := `[
+		{"op":"replace","path":"/spec/template/spec/containers/0/volumeMounts","value":[{"name":"log-storage","mountPath":"/var/log/arc-detective"}]},
+		{"op":"replace","path":"/spec/template/spec/volumes","value":[{"name":"log-storage","emptyDir":{}}]}
+	]`
+	cmd = exec.Command("kubectl", "patch", "deployment", "arc-detective-controller-manager",
+		"-n", namespace, "--type=json", "-p", patchJSON)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to patch deployment")
+
+	By("creating test namespace for synthetic resources")
+	cmd = exec.Command("bash", "-c", fmt.Sprintf("kubectl create ns %s --dry-run=client -o yaml | kubectl apply -f -", testNS))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to create test namespace")
 })
 
 var _ = AfterSuite(func() {
+	By("cleaning up test namespace")
+	cmd := exec.Command("kubectl", "delete", "ns", testNS, "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+
+	By("cleaning up the curl pod for metrics")
+	cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+
+	By("undeploying the controller-manager")
+	cmd = exec.Command("make", "undeploy")
+	_, _ = utils.Run(cmd)
+
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	_, _ = utils.Run(cmd)
+
+	By("removing ARC EphemeralRunner CRD (stub)")
+	cmd = exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/ephemeralrunner-crd.yaml", "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+
+	By("removing manager namespace")
+	cmd = exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+
 	teardownCertManager()
 })
 
