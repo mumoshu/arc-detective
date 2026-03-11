@@ -58,7 +58,7 @@ func (m *MockGitHubServer) handler(w http.ResponseWriter, r *http.Request) {
 				runID, err := strconv.ParseInt(parts[i+1], 10, 64)
 				if err == nil {
 					jobs := m.jobs[runID]
-					json.NewEncoder(w).Encode(map[string]interface{}{
+					_ = json.NewEncoder(w).Encode(map[string]any{
 						"total_count": len(jobs),
 						"jobs":        jobs,
 					})
@@ -86,7 +86,7 @@ func (m *MockGitHubServer) handler(w http.ResponseWriter, r *http.Request) {
 				}
 				runs = filtered
 			}
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"total_count":   len(runs),
 				"workflow_runs": runs,
 			})
@@ -104,7 +104,7 @@ func (m *MockGitHubServer) handler(w http.ResponseWriter, r *http.Request) {
 					for _, jobs := range m.jobs {
 						for _, job := range jobs {
 							if job.ID == jobID {
-								json.NewEncoder(w).Encode(job)
+								_ = json.NewEncoder(w).Encode(job)
 								return
 							}
 						}

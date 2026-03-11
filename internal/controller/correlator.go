@@ -38,7 +38,7 @@ func (r *Correlator) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if inv.Status.Phase != "Collecting" {
+	if inv.Status.Phase != phaseCollecting {
 		return ctrl.Result{}, nil
 	}
 
@@ -46,9 +46,7 @@ func (r *Correlator) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Enrich K8s side if missing
 	if inv.Spec.EphemeralRunner == nil || inv.Spec.Pod == nil {
-		if err := r.enrichFromK8s(ctx, &inv); err != nil {
-			logger.Error(err, "Failed to enrich from K8s")
-		}
+		r.enrichFromK8s(ctx, &inv)
 	}
 
 	// Enrich GitHub side if missing
@@ -96,7 +94,7 @@ func (r *Correlator) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, nil
 }
 
-func (r *Correlator) enrichFromK8s(ctx context.Context, inv *v1alpha1.Investigation) error {
+func (r *Correlator) enrichFromK8s(ctx context.Context, inv *v1alpha1.Investigation) {
 	// Try to find matching EphemeralRunner by runner name from the Job
 	if inv.Spec.Job != nil && inv.Spec.Job.RunnerName != "" && inv.Spec.EphemeralRunner == nil {
 		var erList unstructured.UnstructuredList
@@ -134,7 +132,6 @@ func (r *Correlator) enrichFromK8s(ctx context.Context, inv *v1alpha1.Investigat
 			}
 		}
 	}
-	return nil
 }
 
 func (r *Correlator) enrichFromGitHub(ctx context.Context, inv *v1alpha1.Investigation) error {
@@ -241,7 +238,11 @@ func (r *Correlator) collectPodEvents(ctx context.Context, inv *v1alpha1.Investi
 
 // BuildTimeline merges and sorts timeline events by timestamp.
 func BuildTimeline(events ...[]v1alpha1.TimelineEvent) []v1alpha1.TimelineEvent {
-	var merged []v1alpha1.TimelineEvent
+	total := 0
+	for _, evts := range events {
+		total += len(evts)
+	}
+	merged := make([]v1alpha1.TimelineEvent, 0, total)
 	for _, evts := range events {
 		merged = append(merged, evts...)
 	}
@@ -259,7 +260,7 @@ func (r *Correlator) SetupWithManager(mgr ctrl.Manager) error {
 			if !ok {
 				return false
 			}
-			return inv.Status.Phase == "Collecting"
+			return inv.Status.Phase == phaseCollecting
 		})).
 		Named("correlator").
 		Complete(r)
@@ -303,7 +304,7 @@ func buildPodInfoFromPod(pod *corev1.Pod) *v1alpha1.PodInfo {
 			csi.State = "terminated"
 			csi.Reason = cs.State.Terminated.Reason
 			csi.ExitCode = &cs.State.Terminated.ExitCode
-			csi.OOMKilled = cs.State.Terminated.Reason == "OOMKilled"
+			csi.OOMKilled = cs.State.Terminated.Reason == reasonOOMKilled
 		}
 		info.ContainerStatuses = append(info.ContainerStatuses, csi)
 	}

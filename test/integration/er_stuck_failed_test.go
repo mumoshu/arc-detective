@@ -16,7 +16,7 @@ func TestEphemeralRunnerStuckFailedCreatesInvestigation(t *testing.T) {
 	require.NoError(t, k8sClient.Create(ctx, er))
 
 	// Then update status to Failed via status subresource
-	updateERStatus(t, ns, "runner-stuck-test", map[string]interface{}{
+	updateERStatus(t, ns, "runner-stuck-test", map[string]any{
 		"phase":   "Failed",
 		"reason":  "RunnerDeregistered",
 		"message": "Runner deregistered from GitHub",

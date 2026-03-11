@@ -49,11 +49,11 @@ func (c *PodLogCollector) CollectLogs(ctx context.Context, pod *corev1.Pod) ([]s
 		}
 
 		if err := c.storage.Write(logPath, stream); err != nil {
-			stream.Close()
+			_ = stream.Close()
 			logger.Error(err, "Failed to write logs", "container", containerName)
 			continue
 		}
-		stream.Close()
+		_ = stream.Close()
 
 		logPaths = append(logPaths, logPath)
 		logger.V(1).Info("Collected logs", "container", containerName, "path", logPath)
@@ -66,7 +66,7 @@ func (c *PodLogCollector) CollectLogs(ctx context.Context, pod *corev1.Pod) ([]s
 }
 
 func allContainerNames(pod *corev1.Pod) []string {
-	var names []string
+	names := make([]string, 0, len(pod.Spec.InitContainers)+len(pod.Spec.Containers))
 	for _, c := range pod.Spec.InitContainers {
 		names = append(names, c.Name)
 	}

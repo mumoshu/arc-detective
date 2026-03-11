@@ -37,7 +37,7 @@ func (s *DiskStorage) Write(path string, data io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := io.Copy(f, data); err != nil {
 		return fmt.Errorf("writing file: %w", err)

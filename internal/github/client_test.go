@@ -17,7 +17,7 @@ func TestListWorkflowRuns(t *testing.T) {
 		assert.Equal(t, "in_progress", r.URL.Query().Get("status"))
 		assert.Equal(t, "Bearer fake-token", r.Header.Get("Authorization"))
 		w.Header().Set("X-RateLimit-Remaining", "100")
-		json.NewEncoder(w).Encode(listRunsResponse{
+		_ = json.NewEncoder(w).Encode(listRunsResponse{
 			TotalCount:   1,
 			WorkflowRuns: []WorkflowRun{{ID: 123, Name: "CI", Status: "in_progress"}},
 		})
@@ -36,7 +36,7 @@ func TestListJobsForRun(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/myorg/myrepo/actions/runs/123/jobs", r.URL.Path)
 		w.Header().Set("X-RateLimit-Remaining", "50")
-		json.NewEncoder(w).Encode(listJobsResponse{
+		_ = json.NewEncoder(w).Encode(listJobsResponse{
 			TotalCount: 1,
 			Jobs:       []Job{{ID: 456, Name: "build", Status: "completed", Conclusion: "failure"}},
 		})
@@ -55,7 +55,7 @@ func TestGetJob(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/myorg/myrepo/actions/jobs/456", r.URL.Path)
 		w.Header().Set("X-RateLimit-Remaining", "90")
-		json.NewEncoder(w).Encode(Job{
+		_ = json.NewEncoder(w).Encode(Job{
 			ID: 456, Name: "build", Status: "completed", RunnerName: "runner-abc",
 		})
 	}))
@@ -71,7 +71,7 @@ func TestGetJob(t *testing.T) {
 func TestRateLimitTracking(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "5")
-		json.NewEncoder(w).Encode(listRunsResponse{})
+		_ = json.NewEncoder(w).Encode(listRunsResponse{})
 	}))
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestRateLimitTracking(t *testing.T) {
 func TestRateLimitNotTriggeredWithHighRemaining(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "4999")
-		json.NewEncoder(w).Encode(listRunsResponse{})
+		_ = json.NewEncoder(w).Encode(listRunsResponse{})
 	}))
 	defer srv.Close()
 
@@ -96,7 +96,7 @@ func TestRateLimitNotTriggeredWithHighRemaining(t *testing.T) {
 func TestAPIErrorReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"message":"rate limit exceeded"}`))
+		_, _ = w.Write([]byte(`{"message":"rate limit exceeded"}`))
 	}))
 	defer srv.Close()
 
@@ -111,7 +111,7 @@ func TestListWorkflowRunsWithoutStatusFilter(t *testing.T) {
 		assert.Equal(t, "/repos/myorg/myrepo/actions/runs", r.URL.Path)
 		assert.Empty(t, r.URL.Query().Get("status"))
 		w.Header().Set("X-RateLimit-Remaining", "100")
-		json.NewEncoder(w).Encode(listRunsResponse{})
+		_ = json.NewEncoder(w).Encode(listRunsResponse{})
 	}))
 	defer srv.Close()
 

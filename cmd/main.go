@@ -54,8 +54,10 @@ func main() {
 	flag.StringVar(&ghToken, "github-token", os.Getenv("GITHUB_TOKEN"), "GitHub PAT for API access.")
 	flag.StringVar(&ghBaseURL, "github-base-url", "", "GitHub API base URL (for testing).")
 	flag.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "GitHub API poll interval.")
-	flag.DurationVar(&stuckThreshold, "stuck-threshold", 5*time.Minute, "How long before a Failed EphemeralRunner triggers an investigation.")
-	flag.DurationVar(&runningThreshold, "running-threshold", 30*time.Minute, "How long before a Running EphemeralRunner triggers an investigation.")
+	flag.DurationVar(&stuckThreshold, "stuck-threshold", 5*time.Minute,
+		"How long before a Failed EphemeralRunner triggers an investigation.")
+	flag.DurationVar(&runningThreshold, "running-threshold", 30*time.Minute,
+		"How long before a Running EphemeralRunner triggers an investigation.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)

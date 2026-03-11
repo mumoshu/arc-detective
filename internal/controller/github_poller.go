@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,11 +24,6 @@ type GitHubPoller struct {
 	ghClient     gh.Client
 	pollInterval time.Duration
 	queuedThresh time.Duration
-	configName   string
-	configNS     string
-
-	mu    sync.Mutex
-	cache map[int64]*gh.WorkflowRun // run ID -> last known state
 }
 
 func NewGitHubPoller(c client.Client, ghClient gh.Client, pollInterval time.Duration) *GitHubPoller {
@@ -38,7 +32,6 @@ func NewGitHubPoller(c client.Client, ghClient gh.Client, pollInterval time.Dura
 		ghClient:     ghClient,
 		pollInterval: pollInterval,
 		queuedThresh: defaultQueuedThreshold,
-		cache:        make(map[int64]*gh.WorkflowRun),
 	}
 }
 
@@ -79,15 +72,13 @@ func (p *GitHubPoller) poll(ctx context.Context) error {
 
 	for _, config := range configs.Items {
 		for _, repo := range config.Spec.Repositories {
-			if err := p.pollRepo(ctx, repo.Owner, repo.Name, config.Namespace); err != nil {
-				logger.Error(err, "Failed to poll repo", "owner", repo.Owner, "repo", repo.Name)
-			}
+			p.pollRepo(ctx, repo.Owner, repo.Name, config.Namespace)
 		}
 	}
 	return nil
 }
 
-func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace string) error {
+func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace string) {
 	logger := log.FromContext(ctx).WithName("github-poller")
 
 	// Fetch in-progress and queued runs
@@ -111,8 +102,6 @@ func (p *GitHubPoller) pollRepo(ctx context.Context, owner, repo, namespace stri
 			}
 		}
 	}
-
-	return nil
 }
 
 func (p *GitHubPoller) checkJob(ctx context.Context, owner, repo, namespace string, run *gh.WorkflowRun, job *gh.Job) {
@@ -196,7 +185,7 @@ func (p *GitHubPoller) createJobInvestigation(ctx context.Context, owner, repo, 
 		return err
 	}
 	// Status subresource requires a separate update after creation
-	inv.Status.Phase = "Collecting"
+	inv.Status.Phase = phaseCollecting
 	return p.Status().Update(ctx, inv)
 }
 

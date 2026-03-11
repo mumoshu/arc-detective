@@ -136,8 +136,8 @@ func TestMain(m *testing.M) {
 	// Cleanup
 	cancel()
 	mockGitHub.Close()
-	testEnv.Stop()
-	os.RemoveAll(logDir)
+	_ = testEnv.Stop()
+	_ = os.RemoveAll(logDir)
 
 	os.Exit(code)
 }

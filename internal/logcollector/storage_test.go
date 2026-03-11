@@ -18,7 +18,7 @@ func TestDiskStorageWriteRead(t *testing.T) {
 
 	reader, err := storage.Read("ns1/runner-abc/runner/2025-01-01T00-00-00.log")
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	data, err := io.ReadAll(reader)
 	require.NoError(t, err)
@@ -44,9 +44,9 @@ func TestDiskStorageListPrefix(t *testing.T) {
 	dir := t.TempDir()
 	storage := NewDiskStorage(dir)
 
-	storage.Write("ns1/runner-1/runner/a.log", strings.NewReader("data1"))
-	storage.Write("ns1/runner-1/runner/b.log", strings.NewReader("data2"))
-	storage.Write("ns2/runner-2/runner/c.log", strings.NewReader("data3"))
+	require.NoError(t, storage.Write("ns1/runner-1/runner/a.log", strings.NewReader("data1")))
+	require.NoError(t, storage.Write("ns1/runner-1/runner/b.log", strings.NewReader("data2")))
+	require.NoError(t, storage.Write("ns2/runner-2/runner/c.log", strings.NewReader("data3")))
 
 	files := storage.ListPrefix("ns1/runner-1/")
 	assert.Len(t, files, 2)
@@ -59,7 +59,7 @@ func TestDiskStorageUsageBytes(t *testing.T) {
 	storage := NewDiskStorage(dir)
 
 	data := strings.Repeat("x", 1024)
-	storage.Write("a.log", strings.NewReader(data))
+	require.NoError(t, storage.Write("a.log", strings.NewReader(data)))
 
 	usage, err := storage.UsageBytes()
 	require.NoError(t, err)
@@ -70,8 +70,8 @@ func TestDiskStorageOldestFiles(t *testing.T) {
 	dir := t.TempDir()
 	storage := NewDiskStorage(dir)
 
-	storage.Write("old.log", strings.NewReader("old"))
-	storage.Write("new.log", strings.NewReader("new"))
+	require.NoError(t, storage.Write("old.log", strings.NewReader("old")))
+	require.NoError(t, storage.Write("new.log", strings.NewReader("new")))
 
 	files, err := storage.OldestFiles()
 	require.NoError(t, err)

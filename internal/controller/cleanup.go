@@ -97,8 +97,8 @@ func (c *Cleanup) getRetentionPeriod(ctx context.Context) time.Duration {
 }
 
 func (c *Cleanup) enforceStorageLimit(ctx context.Context, logger interface {
-	Error(error, string, ...interface{})
-	Info(string, ...interface{})
+	Error(error, string, ...any)
+	Info(string, ...any)
 }) {
 	if c.storage == nil {
 		return

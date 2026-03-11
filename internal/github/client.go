@@ -27,8 +27,8 @@ type client struct {
 
 type Option func(*client)
 
-func WithBaseURL(url string) Option {
-	return func(c *client) { c.baseURL = url }
+func WithBaseURL(baseURL string) Option {
+	return func(c *client) { c.baseURL = baseURL }
 }
 
 func WithPAT(token string) Option {
@@ -88,7 +88,7 @@ func (c *client) GetJob(ctx context.Context, owner, repo string, jobID int64) (*
 	return &result, nil
 }
 
-func (c *client) doGet(ctx context.Context, rawURL string, result interface{}) error {
+func (c *client) doGet(ctx context.Context, rawURL string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
@@ -104,7 +104,7 @@ func (c *client) doGet(ctx context.Context, rawURL string, result interface{}) e
 	if err != nil {
 		return fmt.Errorf("executing request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	c.rateLimit.Update(resp)
 

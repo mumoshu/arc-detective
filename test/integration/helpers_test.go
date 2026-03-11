@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func createTestNamespace(t *testing.T) string {
 	}
 	require.NoError(t, k8sClient.Create(ctx, ns))
 	t.Cleanup(func() {
-		k8sClient.Delete(context.Background(), ns)
+		_ = k8sClient.Delete(context.Background(), ns)
 	})
 	return ns.Name
 }
@@ -55,16 +56,16 @@ func arcLabels(scaleSetName string) map[string]string {
 	}
 }
 
-func newEphemeralRunner(ns, name string, status map[string]interface{}) *unstructured.Unstructured {
+func newEphemeralRunner(ns, name string, status map[string]any) *unstructured.Unstructured {
 	er := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "actions.github.com/v1alpha1",
 			"kind":       "EphemeralRunner",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      name,
 				"namespace": ns,
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"githubConfigUrl":    "https://github.com/myorg/myrepo",
 				"githubConfigSecret": "fake-secret",
 				"runnerScaleSetId":   int64(1),
@@ -98,34 +99,14 @@ func waitForInvestigation(t *testing.T, ns string, timeout time.Duration) *v1alp
 	return nil
 }
 
-func waitForInvestigationPhase(t *testing.T, ns string, phase string, timeout time.Duration) *v1alpha1.Investigation {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		list := &v1alpha1.InvestigationList{}
-		if err := k8sClient.List(ctx, list, client.InNamespace(ns)); err == nil {
-			for _, inv := range list.Items {
-				if inv.Status.Phase == phase {
-					return &inv
-				}
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatalf("Timed out waiting for Investigation in phase %q", phase)
-	return nil
-}
-
 func waitForFinalizer(t *testing.T, ns, name, finalizerName string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		pod := &corev1.Pod{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, pod); err == nil {
-			for _, f := range pod.Finalizers {
-				if f == finalizerName {
-					return
-				}
+			if slices.Contains(pod.Finalizers, finalizerName) {
+				return
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -141,7 +122,7 @@ func updatePodStatus(t *testing.T, ns, name string, updateFn func(*corev1.PodSta
 	require.NoError(t, k8sClient.Status().Update(ctx, pod))
 }
 
-func updateERStatus(t *testing.T, ns, name string, status map[string]interface{}) {
+func updateERStatus(t *testing.T, ns, name string, status map[string]any) {
 	t.Helper()
 	er := &unstructured.Unstructured{}
 	er.SetGroupVersionKind(schema.GroupVersionKind{

@@ -81,7 +81,7 @@ func (r *EphemeralRunnerWatcher) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func (r *EphemeralRunnerWatcher) handleFailed(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...interface{}) }) (ctrl.Result, error) {
+func (r *EphemeralRunnerWatcher) handleFailed(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...any) }) (ctrl.Result, error) {
 	age := time.Since(er.GetCreationTimestamp().Time)
 	if age < r.StuckThreshold {
 		return ctrl.Result{RequeueAfter: r.StuckThreshold - age}, nil
@@ -94,7 +94,7 @@ func (r *EphemeralRunnerWatcher) handleFailed(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *EphemeralRunnerWatcher) handleRunning(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...interface{}) }) (ctrl.Result, error) {
+func (r *EphemeralRunnerWatcher) handleRunning(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...any) }) (ctrl.Result, error) {
 	r.mu.Lock()
 	tracker := r.erStatus[req.NamespacedName]
 	r.mu.Unlock()
@@ -190,7 +190,7 @@ func (r *EphemeralRunnerWatcher) createInvestigation(ctx context.Context, er *un
 		return err
 	}
 	// Status subresource requires a separate update after creation
-	inv.Status.Phase = "Collecting"
+	inv.Status.Phase = phaseCollecting
 	return r.Status().Update(ctx, inv)
 }
 
@@ -204,7 +204,7 @@ func (r *EphemeralRunnerWatcher) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func getNestedString(obj map[string]interface{}, fields ...string) string {
+func getNestedString(obj map[string]any, fields ...string) string {
 	val, _, _ := unstructured.NestedString(obj, fields...)
 	return val
 }

@@ -23,6 +23,8 @@ import (
 const (
 	arcRunnerLabel        = "actions-ephemeral-runner"
 	logCollectorFinalizer = "detective.arcdetective.io/log-collector"
+	phaseCollecting       = "Collecting"
+	reasonOOMKilled       = "OOMKilled"
 )
 
 // PodWatcher watches ARC runner pods for anomalies and collects logs before deletion.
@@ -134,7 +136,7 @@ func (r *PodWatcher) recordTransition(key types.NamespacedName, pod *corev1.Pod)
 		r.podHistory[key] = tracker
 	}
 
-	if pod.Status.Phase != "" && corev1.PodPhase(tracker.lastPhase) != pod.Status.Phase {
+	if pod.Status.Phase != "" && tracker.lastPhase != pod.Status.Phase {
 		tracker.phaseTransitions = append(tracker.phaseTransitions, v1alpha1.StatusTransition{
 			From:      string(tracker.lastPhase),
 			To:        string(pod.Status.Phase),
@@ -146,7 +148,7 @@ func (r *PodWatcher) recordTransition(key types.NamespacedName, pod *corev1.Pod)
 
 func (r *PodWatcher) detectAnomaly(pod *corev1.Pod) string {
 	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Terminated != nil && cs.State.Terminated.Reason == "OOMKilled" {
+		if cs.State.Terminated != nil && cs.State.Terminated.Reason == reasonOOMKilled {
 			return "pod-oomkill"
 		}
 		// Non-zero exit (excluding OOMKill handled above).
@@ -196,7 +198,7 @@ func (r *PodWatcher) buildPodInfo(pod *corev1.Pod) *v1alpha1.PodInfo {
 			csi.State = "terminated"
 			csi.Reason = cs.State.Terminated.Reason
 			csi.ExitCode = &cs.State.Terminated.ExitCode
-			csi.OOMKilled = cs.State.Terminated.Reason == "OOMKilled"
+			csi.OOMKilled = cs.State.Terminated.Reason == reasonOOMKilled
 		}
 		info.ContainerStatuses = append(info.ContainerStatuses, csi)
 	}
@@ -237,7 +239,7 @@ func (r *PodWatcher) ensureInvestigation(ctx context.Context, pod *corev1.Pod, l
 			return err
 		}
 		// Status subresource requires a separate update after creation
-		inv.Status.Phase = "Collecting"
+		inv.Status.Phase = phaseCollecting
 		return r.Status().Update(ctx, inv)
 	}
 	if err != nil {
@@ -287,7 +289,7 @@ func (r *PodWatcher) createAnomalyInvestigation(ctx context.Context, pod *corev1
 		return err
 	}
 	// Status subresource requires a separate update after creation
-	inv.Status.Phase = "Collecting"
+	inv.Status.Phase = phaseCollecting
 	return r.Status().Update(ctx, inv)
 }
 
