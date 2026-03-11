@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	v1alpha1 "github.com/mumoshu/arc-detective/api/v1alpha1"
 	"github.com/mumoshu/arc-detective/test/utils"
 )
 
@@ -60,6 +61,47 @@ func dumpDiagnostics() {
 
 	out, _ = utils.Run(exec.Command("kubectl", "get", "pods", "-A", "-o", "wide"))
 	_, _ = fmt.Fprintf(GinkgoWriter, "All pods:\n%s\n", out)
+}
+
+// runKubectl is a top-level helper for Detection tests.
+func runKubectl(args ...string) (string, error) {
+	return utils.Run(exec.Command("kubectl", args...))
+}
+
+// getInvestigation fetches the full Investigation CR as a typed struct.
+func getInvestigation(ns, name string) (*v1alpha1.Investigation, error) {
+	out, err := runKubectl("get", "investigation.detective.arcdetective.io", name,
+		"-n", ns, "-o", "json")
+	if err != nil {
+		return nil, fmt.Errorf("kubectl get investigation: %w: %s", err, out)
+	}
+	var inv v1alpha1.Investigation
+	if err := json.Unmarshal([]byte(out), &inv); err != nil {
+		return nil, fmt.Errorf("unmarshal investigation: %w", err)
+	}
+	return &inv, nil
+}
+
+// getControllerLogs returns the last N lines of the controller pod logs.
+func getControllerLogs(tailLines int) string {
+	out, _ := runKubectl("logs", "-l", "control-plane=controller-manager",
+		"-n", namespace, "--tail", fmt.Sprintf("%d", tailLines), "--all-containers")
+	return out
+}
+
+// readCollectedLog reads a log file from inside the controller pod.
+func readCollectedLog(logPath string) (string, error) {
+	podName, err := runKubectl("get", "pods", "-l", "control-plane=controller-manager",
+		"-n", namespace, "-o", "jsonpath={.items[0].metadata.name}")
+	if err != nil {
+		return "", fmt.Errorf("get controller pod name: %w", err)
+	}
+	fullPath := fmt.Sprintf("/var/log/arc-detective/%s", logPath)
+	out, err := runKubectl("exec", podName, "-n", namespace, "--", "cat", fullPath)
+	if err != nil {
+		return "", fmt.Errorf("cat %s: %w: %s", fullPath, err, out)
+	}
+	return out, nil
 }
 
 var _ = Describe("Manager", Ordered, func() {
@@ -204,10 +246,6 @@ var _ = Describe("Manager", Ordered, func() {
 })
 
 var _ = Describe("Detection", Ordered, func() {
-	runKubectl := func(args ...string) (string, error) {
-		return utils.Run(exec.Command("kubectl", args...))
-	}
-
 	BeforeAll(func() {
 		By("cleaning up leftover investigations from previous runs")
 		_, _ = runKubectl("delete", "investigations.detective.arcdetective.io", "--all", "-n", testNS, "--ignore-not-found")
@@ -225,7 +263,6 @@ var _ = Describe("Detection", Ordered, func() {
 	AfterEach(func() {
 		if CurrentSpecReport().Failed() {
 			dumpDiagnostics()
-			// Also dump the specific test pod
 			out, _ := runKubectl("get", "pods", "-n", testNS, "-o", "yaml")
 			_, _ = fmt.Fprintf(GinkgoWriter, "Test pods:\n%s\n", out)
 		}
@@ -260,13 +297,6 @@ var _ = Describe("Detection", Ordered, func() {
 		return ns, name
 	}
 
-	getInvField := func(ns, name, jsonpath string) string {
-		out, err := runKubectl("get", "investigation.detective.arcdetective.io", name,
-			"-n", ns, "-o", fmt.Sprintf("jsonpath=%s", jsonpath))
-		Expect(err).NotTo(HaveOccurred(), "failed to get investigation field: %s", out)
-		return out
-	}
-
 	applyYAML := func(yaml string) {
 		cmd := exec.Command("bash", "-c", fmt.Sprintf("echo '%s' | kubectl apply -f -", yaml))
 		_, err := utils.Run(cmd)
@@ -287,7 +317,7 @@ spec:
   containers:
     - name: runner
       image: busybox
-      command: ["sh", "-c", "sleep 2; exit 1"]
+      command: ["sh", "-c", "echo crash-test-output; sleep 2; exit 1"]
 `, podName, testNS))
 		DeferCleanup(func() {
 			_, _ = runKubectl("delete", "pod", podName, "-n", testNS, "--ignore-not-found")
@@ -298,8 +328,62 @@ spec:
 			_, _ = runKubectl("delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
 		})
 
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.failureType}")).To(Equal("pod-crashed"))
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.remediation}")).To(ContainSubstring("crash reason"))
+		inv, err := getInvestigation(invNS, invName)
+		Expect(err).NotTo(HaveOccurred(), "failed to fetch investigation as JSON")
+
+		_, _ = fmt.Fprintf(GinkgoWriter, "Investigation %s/%s:\n", invNS, invName)
+
+		By("verifying status.phase")
+		Expect(inv.Status.Phase).To(Equal("Complete"))
+
+		By("verifying trigger")
+		Expect(inv.Spec.Trigger.Type).To(Equal("pod-crash"))
+		Expect(inv.Spec.Trigger.Source).To(Equal(fmt.Sprintf("%s/%s", testNS, podName)))
+
+		By("verifying pod info")
+		Expect(inv.Spec.Pod).NotTo(BeNil(), "spec.pod must be populated")
+		Expect(inv.Spec.Pod.Name).To(Equal(podName))
+		Expect(inv.Spec.Pod.Namespace).To(Equal(testNS))
+		Expect(inv.Spec.Pod.NodeName).NotTo(BeEmpty(), "pod.nodeName must be set")
+
+		By("verifying container statuses")
+		Expect(inv.Spec.Pod.ContainerStatuses).To(HaveLen(1))
+		cs := inv.Spec.Pod.ContainerStatuses[0]
+		Expect(cs.Name).To(Equal("runner"))
+		Expect(cs.State).To(Equal("terminated"))
+		Expect(cs.ExitCode).NotTo(BeNil())
+		Expect(*cs.ExitCode).To(Equal(int32(1)))
+		Expect(cs.OOMKilled).To(BeFalse())
+
+		By("verifying pod conditions exist")
+		Expect(inv.Spec.Pod.Conditions).NotTo(BeEmpty(), "pod.conditions should be populated")
+
+		By("verifying pod events were collected by Correlator")
+		// K8s events should be present for the pod (at minimum: Scheduled, Pulling, Pulled, Created, Started)
+		Expect(inv.Spec.Pod.Events).NotTo(BeEmpty(), "pod.events should be populated by Correlator")
+		var hasKubeletEvent bool
+		for _, evt := range inv.Spec.Pod.Events {
+			if evt.Source == "kubelet" {
+				hasKubeletEvent = true
+			}
+		}
+		Expect(hasKubeletEvent).To(BeTrue(), "expected at least one kubelet event")
+
+		By("verifying timeline")
+		Expect(inv.Spec.Timeline).NotTo(BeEmpty(), "timeline should have events")
+		var hasPodTrigger bool
+		for _, evt := range inv.Spec.Timeline {
+			if evt.Source == "pod" && evt.Type == "pod-crash" {
+				hasPodTrigger = true
+			}
+		}
+		Expect(hasPodTrigger).To(BeTrue(), "timeline should contain the pod-crash trigger event")
+
+		By("verifying diagnosis")
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("pod-crashed"))
+		Expect(inv.Spec.Diagnosis.Summary).To(ContainSubstring(podName))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("crash reason"))
 	})
 
 	It("should detect OOMKilled runner pod", func() {
@@ -330,8 +414,49 @@ spec:
 			_, _ = runKubectl("delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
 		})
 
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.failureType}")).To(Equal("pod-oomkilled"))
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.remediation}")).To(ContainSubstring("memory"))
+		inv, err := getInvestigation(invNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying status.phase")
+		Expect(inv.Status.Phase).To(Equal("Complete"))
+
+		By("verifying trigger")
+		Expect(inv.Spec.Trigger.Type).To(Equal("pod-oomkill"))
+		Expect(inv.Spec.Trigger.Source).To(Equal(fmt.Sprintf("%s/%s", testNS, podName)))
+
+		By("verifying pod info")
+		Expect(inv.Spec.Pod).NotTo(BeNil())
+		Expect(inv.Spec.Pod.Name).To(Equal(podName))
+		Expect(inv.Spec.Pod.Namespace).To(Equal(testNS))
+
+		By("verifying container statuses show OOMKill")
+		Expect(inv.Spec.Pod.ContainerStatuses).To(HaveLen(1))
+		cs := inv.Spec.Pod.ContainerStatuses[0]
+		Expect(cs.Name).To(Equal("runner"))
+		Expect(cs.State).To(Equal("terminated"))
+		Expect(cs.Reason).To(Equal("OOMKilled"))
+		Expect(cs.ExitCode).NotTo(BeNil())
+		Expect(*cs.ExitCode).To(Equal(int32(137)))
+		Expect(cs.OOMKilled).To(BeTrue())
+
+		By("verifying pod conditions exist")
+		Expect(inv.Spec.Pod.Conditions).NotTo(BeEmpty())
+
+		By("verifying timeline")
+		Expect(inv.Spec.Timeline).NotTo(BeEmpty())
+		var hasPodTrigger bool
+		for _, evt := range inv.Spec.Timeline {
+			if evt.Source == "pod" && evt.Type == "pod-oomkill" {
+				hasPodTrigger = true
+			}
+		}
+		Expect(hasPodTrigger).To(BeTrue(), "timeline should contain the pod-oomkill trigger event")
+
+		By("verifying diagnosis")
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("pod-oomkilled"))
+		Expect(inv.Spec.Diagnosis.Summary).To(ContainSubstring(podName))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("memory"))
 	})
 
 	It("should detect ImagePullBackOff", func() {
@@ -359,8 +484,98 @@ spec:
 			_, _ = runKubectl("delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
 		})
 
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.failureType}")).To(Equal("pod-init-timeout"))
-		Expect(getInvField(invNS, invName, "{.spec.diagnosis.remediation}")).To(ContainSubstring("image"))
+		inv, err := getInvestigation(invNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying status.phase")
+		Expect(inv.Status.Phase).To(Equal("Complete"))
+
+		By("verifying trigger")
+		Expect(inv.Spec.Trigger.Type).To(Equal("pod-init-timeout"))
+		Expect(inv.Spec.Trigger.Source).To(Equal(fmt.Sprintf("%s/%s", testNS, podName)))
+
+		By("verifying pod info")
+		Expect(inv.Spec.Pod).NotTo(BeNil())
+		Expect(inv.Spec.Pod.Name).To(Equal(podName))
+
+		By("verifying container statuses show waiting/ImagePullBackOff")
+		Expect(inv.Spec.Pod.ContainerStatuses).To(HaveLen(1))
+		cs := inv.Spec.Pod.ContainerStatuses[0]
+		Expect(cs.Name).To(Equal("runner"))
+		Expect(cs.State).To(Equal("waiting"))
+		Expect(cs.Reason).To(SatisfyAny(Equal("ImagePullBackOff"), Equal("ErrImagePull")))
+
+		By("verifying pod events show image pull failure")
+		Expect(inv.Spec.Pod.Events).NotTo(BeEmpty(), "pod.events should show image pull failure")
+		var hasImagePullEvent bool
+		for _, evt := range inv.Spec.Pod.Events {
+			if evt.Reason == "Failed" && strings.Contains(evt.Message, "nonexistent-registry.invalid") {
+				hasImagePullEvent = true
+			}
+		}
+		Expect(hasImagePullEvent).To(BeTrue(), "expected an image pull failure event")
+
+		By("verifying timeline")
+		Expect(inv.Spec.Timeline).NotTo(BeEmpty())
+
+		By("verifying diagnosis")
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("pod-init-timeout"))
+		Expect(inv.Spec.Diagnosis.Summary).To(ContainSubstring(podName))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("image"))
+	})
+
+	It("should collect logs and populate logPaths on pod deletion", func() {
+		podName := fmt.Sprintf("log-test-%d", time.Now().Unix())
+		applyYAML(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    actions-ephemeral-runner: "True"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: runner
+      image: busybox
+      command: ["sh", "-c", "echo collected-log-content-12345; sleep 2; exit 1"]
+`, podName, testNS))
+
+		By("waiting for anomaly investigation to be created")
+		invNS, invName := waitForInvestigation("pod-crash", 30*time.Second)
+		DeferCleanup(func() {
+			_, _ = runKubectl("delete", "investigation", invName, "-n", invNS, "--ignore-not-found")
+		})
+
+		By("deleting the pod to trigger log collection via finalizer")
+		_, err := runKubectl("delete", "pod", podName, "-n", testNS, "--timeout=15s")
+		Expect(err).NotTo(HaveOccurred(), "failed to delete pod")
+
+		By("waiting for logPaths to be populated after pod deletion")
+		Eventually(func(g Gomega) {
+			inv, err := getInvestigation(invNS, invName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(inv.Spec.LogPaths).NotTo(BeEmpty(), "logPaths should be populated after pod deletion")
+		}, 15*time.Second, 2*time.Second).Should(Succeed())
+
+		inv, err := getInvestigation(invNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying logPaths contain expected path structure")
+		Expect(inv.Spec.LogPaths).To(HaveLen(1))
+		logPath := inv.Spec.LogPaths[0]
+		Expect(logPath).To(ContainSubstring(testNS))
+		Expect(logPath).To(ContainSubstring(podName))
+		Expect(logPath).To(ContainSubstring("runner"))
+		_, _ = fmt.Fprintf(GinkgoWriter, "Log path: %s\n", logPath)
+
+		By("reading collected log via kubectl exec (as documented in README)")
+		content, err := readCollectedLog(logPath)
+		Expect(err).NotTo(HaveOccurred(), "kubectl exec cat should work on the controller image")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Collected log content:\n%s\n", content)
+		Expect(content).To(ContainSubstring("collected-log-content-12345"),
+			"collected log should contain the pod's stdout output")
 	})
 
 	It("should classify runner-stuck-running when job completed", func() {
@@ -401,12 +616,190 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func(g Gomega) {
-			phase := getInvField(testNS, invName, "{.status.phase}")
-			g.Expect(phase).To(Equal("Complete"))
+			inv, err := getInvestigation(testNS, invName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(inv.Status.Phase).To(Equal("Complete"))
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-		Expect(getInvField(testNS, invName, "{.spec.diagnosis.failureType}")).To(Equal("runner-stuck-running"))
-		Expect(getInvField(testNS, invName, "{.spec.diagnosis.remediation}")).To(ContainSubstring("EphemeralRunner"))
+		inv, err := getInvestigation(testNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("verifying trigger preserved")
+		Expect(inv.Spec.Trigger.Type).To(Equal("runner-stuck"))
+		Expect(inv.Spec.Trigger.Source).To(Equal(fmt.Sprintf("%s/synthetic-er", testNS)))
+
+		By("verifying ephemeralRunner info preserved")
+		Expect(inv.Spec.EphemeralRunner).NotTo(BeNil())
+		Expect(inv.Spec.EphemeralRunner.Name).To(Equal("synthetic-er"))
+		Expect(inv.Spec.EphemeralRunner.Namespace).To(Equal(testNS))
+		Expect(inv.Spec.EphemeralRunner.Phase).To(Equal("Running"))
+
+		By("verifying job info preserved")
+		Expect(inv.Spec.Job).NotTo(BeNil())
+		Expect(inv.Spec.Job.ID).To(Equal(int64(99999)))
+		Expect(inv.Spec.Job.Name).To(Equal("test-job"))
+		Expect(inv.Spec.Job.Status).To(Equal("completed"))
+		Expect(inv.Spec.Job.Conclusion).To(Equal("failure"))
+
+		By("verifying timeline preserved and sorted")
+		Expect(inv.Spec.Timeline).NotTo(BeEmpty())
+		var hasStuckEvent bool
+		for _, evt := range inv.Spec.Timeline {
+			if evt.Type == "runner-stuck" {
+				hasStuckEvent = true
+			}
+		}
+		Expect(hasStuckEvent).To(BeTrue(), "timeline should contain the runner-stuck event")
+
+		By("verifying diagnosis")
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("runner-stuck-running"))
+		Expect(inv.Spec.Diagnosis.Summary).To(ContainSubstring("synthetic-er"))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("EphemeralRunner"))
+	})
+
+	It("should classify runner-stuck-failed", func() {
+		invName := fmt.Sprintf("er-failed-test-%d", time.Now().Unix())
+		applyYAML(fmt.Sprintf(`apiVersion: detective.arcdetective.io/v1alpha1
+kind: Investigation
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  trigger:
+    type: runner-stuck
+    source: %s/failed-er
+  ephemeralRunner:
+    name: failed-er
+    namespace: %s
+    phase: Failed
+  timeline:
+    - timestamp: "2024-01-01T00:00:00Z"
+      source: test
+      type: runner-stuck
+      message: Synthetic stuck-failed test
+`, invName, testNS, testNS, testNS))
+		DeferCleanup(func() {
+			_, _ = runKubectl("delete", "investigation", invName, "-n", testNS, "--ignore-not-found")
+		})
+
+		By("setting status to Collecting so Correlator processes it")
+		cmd := exec.Command("kubectl", "patch", "investigation.detective.arcdetective.io", invName,
+			"-n", testNS, "--subresource=status", "--type=merge",
+			"-p", `{"status":{"phase":"Collecting"}}`)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) {
+			inv, err := getInvestigation(testNS, invName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(inv.Status.Phase).To(Equal("Complete"))
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		inv, err := getInvestigation(testNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("runner-stuck-failed"))
+		Expect(inv.Spec.Diagnosis.Summary).To(ContainSubstring("failed-er"))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("EphemeralRunner"))
+	})
+
+	It("should classify job-stuck-queued", func() {
+		invName := fmt.Sprintf("job-queued-test-%d", time.Now().Unix())
+		applyYAML(fmt.Sprintf(`apiVersion: detective.arcdetective.io/v1alpha1
+kind: Investigation
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  trigger:
+    type: job-stuck-queued
+    source: test-org/test-repo
+  job:
+    id: 88888
+    name: stuck-job
+    status: queued
+  timeline:
+    - timestamp: "2024-01-01T00:00:00Z"
+      source: github
+      type: job-stuck-queued
+      message: Job queued with no runner available
+`, invName, testNS))
+		DeferCleanup(func() {
+			_, _ = runKubectl("delete", "investigation", invName, "-n", testNS, "--ignore-not-found")
+		})
+
+		By("setting status to Collecting so Correlator processes it")
+		cmd := exec.Command("kubectl", "patch", "investigation.detective.arcdetective.io", invName,
+			"-n", testNS, "--subresource=status", "--type=merge",
+			"-p", `{"status":{"phase":"Collecting"}}`)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) {
+			inv, err := getInvestigation(testNS, invName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(inv.Status.Phase).To(Equal("Complete"))
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		inv, err := getInvestigation(testNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("job-stuck-queued"))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("AutoScalingRunnerSet"))
+	})
+
+	It("should classify pod-stuck-terminating", func() {
+		invName := fmt.Sprintf("pod-terminating-test-%d", time.Now().Unix())
+		applyYAML(fmt.Sprintf(`apiVersion: detective.arcdetective.io/v1alpha1
+kind: Investigation
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  trigger:
+    type: pod-deletion
+    source: %s/terminating-pod
+  pod:
+    name: terminating-pod
+    namespace: %s
+    phase: Terminating
+    nodeName: test-node
+    containerStatuses:
+      - name: runner
+        state: running
+        restartCount: 0
+  timeline:
+    - timestamp: "2024-01-01T00:00:00Z"
+      source: pod
+      type: pod-deletion
+      message: Pod stuck in Terminating phase
+`, invName, testNS, testNS, testNS))
+		DeferCleanup(func() {
+			_, _ = runKubectl("delete", "investigation", invName, "-n", testNS, "--ignore-not-found")
+		})
+
+		By("setting status to Collecting so Correlator processes it")
+		cmd := exec.Command("kubectl", "patch", "investigation.detective.arcdetective.io", invName,
+			"-n", testNS, "--subresource=status", "--type=merge",
+			"-p", `{"status":{"phase":"Collecting"}}`)
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) {
+			inv, err := getInvestigation(testNS, invName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(inv.Status.Phase).To(Equal("Complete"))
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		inv, err := getInvestigation(testNS, invName)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(inv.Spec.Diagnosis).NotTo(BeNil())
+		Expect(inv.Spec.Diagnosis.FailureType).To(Equal("pod-stuck-terminating"))
+		Expect(inv.Spec.Diagnosis.Remediation).To(ContainSubstring("Force-delete"))
 	})
 })
 
