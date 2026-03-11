@@ -4,6 +4,7 @@
 package e2e_full
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,15 @@ func runCmd(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// runCmdWithTimeout executes a command with a timeout.
+func runCmdWithTimeout(timeout time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // mustRunCmd runs a command and fails the test if it errors.
 func mustRunCmd(name string, args ...string) string {
 	out, err := runCmd(name, args...)
@@ -30,18 +40,38 @@ func mustRunCmd(name string, args ...string) string {
 }
 
 // waitForPodWithLabel waits for a pod matching the label selector to exist and returns its name.
-func waitForPodWithLabel(namespace, labelSelector string, timeout, poll time.Duration) string {
+// If createdAfter is non-zero, only pods created after that time are considered.
+func waitForPodWithLabel(namespace, labelSelector string, timeout, poll time.Duration, createdAfter ...time.Time) string {
 	var podName string
 	EventuallyWithOffset(1, func(g Gomega) {
+		// Get pod names and creation timestamps
 		out, err := runCmd("kubectl", "get", "pods",
 			"-l", labelSelector,
 			"-n", namespace,
-			"-o", "jsonpath={.items[*].metadata.name}",
+			"-o", "jsonpath={range .items[*]}{.metadata.name},{.metadata.creationTimestamp}{\"\\n\"}{end}",
 			"--field-selector=status.phase!=Succeeded,status.phase!=Failed")
 		g.Expect(err).NotTo(HaveOccurred(), "kubectl get pods failed: %s", out)
-		names := strings.Fields(out)
-		g.Expect(names).NotTo(BeEmpty(), "no pods found with label %s", labelSelector)
-		podName = names[0]
+		var found bool
+		for _, line := range strings.Split(out, "\n") {
+			parts := strings.SplitN(line, ",", 2)
+			if len(parts) != 2 || parts[0] == "" {
+				continue
+			}
+			name := parts[0]
+			if len(createdAfter) > 0 && !createdAfter[0].IsZero() {
+				ts, parseErr := time.Parse(time.RFC3339, parts[1])
+				if parseErr != nil {
+					continue
+				}
+				if ts.Before(createdAfter[0]) {
+					continue // skip pods created before our dispatch
+				}
+			}
+			podName = name
+			found = true
+			break
+		}
+		g.Expect(found).To(BeTrue(), "no pods found with label %s (created after filter applied)", labelSelector)
 	}, timeout, poll).Should(Succeed())
 	return podName
 }
@@ -158,6 +188,17 @@ func waitForInvestigationWithTrigger(triggerType string, timeout, poll time.Dura
 		g.Expect(found).To(BeTrue(), "no completed investigation with trigger type %s found", triggerType)
 	}, timeout, poll).Should(Succeed())
 	return ns, name
+}
+
+// waitForInvestigationByName waits for a specific Investigation CR to reach Complete status.
+func waitForInvestigationByName(namespace, name string, timeout, poll time.Duration) {
+	EventuallyWithOffset(1, func(g Gomega) {
+		out, err := runCmd("kubectl", "get", "investigation.detective.arcdetective.io", name,
+			"-n", namespace,
+			"-o", "jsonpath={.status.phase}")
+		g.Expect(err).NotTo(HaveOccurred(), "failed to get investigation %s/%s: %s", namespace, name, out)
+		g.Expect(out).To(Equal("Complete"), "investigation %s/%s phase is %s, want Complete", namespace, name, out)
+	}, timeout, poll).Should(Succeed())
 }
 
 // getInvestigationField retrieves a jsonpath field from an Investigation CR.

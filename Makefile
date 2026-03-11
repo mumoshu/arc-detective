@@ -111,7 +111,7 @@ E2E_FULL_CLUSTER ?= arc-detective-e2e-full
 .PHONY: test-e2e-full
 test-e2e-full: install-kind install-helm manifests generate fmt vet ## Run the full e2e tests against a real GitHub repo. Requires GITHUB_TOKEN and ARC_DETECTIVE_TEST_REPO.
 	KIND=$(KIND) HELM=$(HELM) \
-	  go test -tags=e2e_full ./test/e2e-full/ -v -ginkgo.v -timeout 20m
+	  go test -tags=e2e_full ./test/e2e-full/ -v -ginkgo.v -timeout 5m
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests

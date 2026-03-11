@@ -40,12 +40,24 @@ func TestClassifyOOMKilledByExitCode(t *testing.T) {
 	assert.Equal(t, "pod-oomkilled", diag.FailureType)
 }
 
-func TestClassifyRunnerStuckRunning(t *testing.T) {
+func TestClassifyRunnerStuckRunningJobCompleted(t *testing.T) {
 	spec := &v1alpha1.InvestigationSpec{
 		EphemeralRunner: &v1alpha1.EphemeralRunnerInfo{
 			Name: "runner-1", Namespace: "ns1", Phase: "Running",
 		},
 		Job: &v1alpha1.JobInfo{Status: "completed", Conclusion: "failure"},
+	}
+	diag := Classify(spec)
+	assert.NotNil(t, diag)
+	assert.Equal(t, "runner-stuck-running", diag.FailureType)
+}
+
+func TestClassifyRunnerStuckRunningPastThreshold(t *testing.T) {
+	spec := &v1alpha1.InvestigationSpec{
+		Trigger: v1alpha1.InvestigationTrigger{Type: "runner-stuck", Source: "ns1/runner-2"},
+		EphemeralRunner: &v1alpha1.EphemeralRunnerInfo{
+			Name: "runner-2", Namespace: "ns1", Phase: "Running",
+		},
 	}
 	diag := Classify(spec)
 	assert.NotNil(t, diag)

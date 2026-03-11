@@ -27,23 +27,25 @@ var ephemeralRunnerGVK = schema.GroupVersionKind{
 // EphemeralRunnerWatcher watches ARC EphemeralRunner CRs for stuck states.
 type EphemeralRunnerWatcher struct {
 	client.Client
-	StuckThreshold time.Duration // how long a Failed ER must exist before triggering
+	StuckThreshold   time.Duration // how long a Failed ER must exist before triggering
+	RunningThreshold time.Duration // how long a Running ER must exist before triggering
 
 	mu       sync.Mutex
 	erStatus map[types.NamespacedName]*erTracker
 }
 
 type erTracker struct {
-	lastPhase   string
-	failedSince *time.Time
-	transitions []v1alpha1.StatusTransition
+	lastPhase    string
+	runningSince *time.Time
+	transitions  []v1alpha1.StatusTransition
 }
 
-func NewEphemeralRunnerWatcher(c client.Client, stuckThreshold time.Duration) *EphemeralRunnerWatcher {
+func NewEphemeralRunnerWatcher(c client.Client, stuckThreshold, runningThreshold time.Duration) *EphemeralRunnerWatcher {
 	return &EphemeralRunnerWatcher{
-		Client:         c,
-		StuckThreshold: stuckThreshold,
-		erStatus:       make(map[types.NamespacedName]*erTracker),
+		Client:           c,
+		StuckThreshold:   stuckThreshold,
+		RunningThreshold: runningThreshold,
+		erStatus:         make(map[types.NamespacedName]*erTracker),
 	}
 }
 
@@ -80,20 +82,12 @@ func (r *EphemeralRunnerWatcher) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *EphemeralRunnerWatcher) handleFailed(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...interface{}) }) (ctrl.Result, error) {
-	r.mu.Lock()
-	tracker := r.erStatus[req.NamespacedName]
-	r.mu.Unlock()
-
-	if tracker == nil || tracker.failedSince == nil {
-		return ctrl.Result{RequeueAfter: r.StuckThreshold}, nil
+	age := time.Since(er.GetCreationTimestamp().Time)
+	if age < r.StuckThreshold {
+		return ctrl.Result{RequeueAfter: r.StuckThreshold - age}, nil
 	}
 
-	if time.Since(*tracker.failedSince) < r.StuckThreshold {
-		remaining := r.StuckThreshold - time.Since(*tracker.failedSince)
-		return ctrl.Result{RequeueAfter: remaining}, nil
-	}
-
-	logger.Info("EphemeralRunner stuck in Failed state", "name", req.Name, "since", tracker.failedSince)
+	logger.Info("EphemeralRunner stuck in Failed state", "name", req.Name, "age", age)
 	if err := r.createInvestigation(ctx, er, "runner-stuck", phase); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -101,8 +95,23 @@ func (r *EphemeralRunnerWatcher) handleFailed(ctx context.Context, req ctrl.Requ
 }
 
 func (r *EphemeralRunnerWatcher) handleRunning(ctx context.Context, req ctrl.Request, er *unstructured.Unstructured, phase string, logger interface{ Info(string, ...interface{}) }) (ctrl.Result, error) {
-	// Could check if GitHub job is already completed while runner is still running.
-	// For now, the correlator handles this after an Investigation is created.
+	r.mu.Lock()
+	tracker := r.erStatus[req.NamespacedName]
+	r.mu.Unlock()
+
+	if tracker == nil || tracker.runningSince == nil {
+		return ctrl.Result{RequeueAfter: r.RunningThreshold}, nil
+	}
+
+	elapsed := time.Since(*tracker.runningSince)
+	if elapsed < r.RunningThreshold {
+		return ctrl.Result{RequeueAfter: r.RunningThreshold - elapsed}, nil
+	}
+
+	logger.Info("EphemeralRunner stuck in Running state", "name", req.Name, "runningSince", tracker.runningSince)
+	if err := r.createInvestigation(ctx, er, "runner-stuck", phase); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -124,11 +133,11 @@ func (r *EphemeralRunnerWatcher) recordTransition(key types.NamespacedName, phas
 		})
 		tracker.lastPhase = phase
 
-		if phase == "Failed" {
+		if phase == "Running" {
 			now := time.Now()
-			tracker.failedSince = &now
+			tracker.runningSince = &now
 		} else {
-			tracker.failedSince = nil
+			tracker.runningSince = nil
 		}
 	}
 }

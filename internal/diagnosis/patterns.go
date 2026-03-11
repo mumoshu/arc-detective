@@ -83,15 +83,17 @@ var KnownPatterns = []FailurePattern{
 	},
 	{
 		Type:        "runner-stuck-running",
-		Description: "EphemeralRunner stuck in Running after job completed/failed",
+		Description: "EphemeralRunner stuck in Running state",
 		Match: func(spec *v1alpha1.InvestigationSpec) bool {
-			if spec.EphemeralRunner == nil {
+			if spec.EphemeralRunner == nil || spec.EphemeralRunner.Phase != "Running" {
 				return false
 			}
-			if spec.EphemeralRunner.Phase != "Running" {
-				return false
+			// Variant 1: job completed but runner still running (ARC cleanup failed)
+			if spec.Job != nil && spec.Job.Status == "completed" {
+				return true
 			}
-			if spec.Job != nil && (spec.Job.Status == "completed") {
+			// Variant 2: runner running past threshold (triggered by watcher)
+			if spec.Trigger.Type == "runner-stuck" {
 				return true
 			}
 			return false

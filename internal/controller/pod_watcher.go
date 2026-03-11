@@ -155,6 +155,10 @@ func (r *PodWatcher) detectAnomaly(pod *corev1.Pod) string {
 		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
 			return "pod-crash"
 		}
+		// Image pull failure — runner image doesn't exist or can't be pulled.
+		if cs.State.Waiting != nil && (cs.State.Waiting.Reason == "ImagePullBackOff" || cs.State.Waiting.Reason == "ErrImagePull") {
+			return "pod-init-timeout"
+		}
 	}
 	return ""
 }

@@ -100,7 +100,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
-	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), 1*time.Second)
+	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), 1*time.Second, 5*time.Second)
 	if err := erWatcher.SetupWithManager(mgr); err != nil {
 		panic(err)
 	}

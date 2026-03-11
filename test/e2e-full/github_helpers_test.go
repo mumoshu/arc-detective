@@ -254,6 +254,38 @@ func cancelWorkflowRun(owner, repo, token string, runID int64) error {
 	return nil
 }
 
+// cancelAllInProgressRuns cancels all in-progress and queued workflow runs for a workflow.
+func cancelAllInProgressRuns(owner, repo, token, workflowFile string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/runs?per_page=30&status=in_progress", githubAPIBase, owner, repo, workflowFile)
+	cancelRuns := func(apiURL string) error {
+		req, _ := http.NewRequest(http.MethodGet, apiURL, nil)
+		setGitHubHeaders(req, token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			WorkflowRuns []struct {
+				ID int64 `json:"id"`
+			} `json:"workflow_runs"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+		for _, run := range result.WorkflowRuns {
+			_ = cancelWorkflowRun(owner, repo, token, run.ID)
+		}
+		return nil
+	}
+
+	if err := cancelRuns(url); err != nil {
+		return err
+	}
+	// Also cancel queued runs
+	queuedURL := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/runs?per_page=30&status=queued", githubAPIBase, owner, repo, workflowFile)
+	return cancelRuns(queuedURL)
+}
+
 func setGitHubHeaders(req *http.Request, token string) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")

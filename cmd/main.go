@@ -42,6 +42,7 @@ func main() {
 	var ghBaseURL string
 	var pollInterval time.Duration
 	var stuckThreshold time.Duration
+	var runningThreshold time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -51,6 +52,7 @@ func main() {
 	flag.StringVar(&ghBaseURL, "github-base-url", "", "GitHub API base URL (for testing).")
 	flag.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "GitHub API poll interval.")
 	flag.DurationVar(&stuckThreshold, "stuck-threshold", 5*time.Minute, "How long before a Failed EphemeralRunner triggers an investigation.")
+	flag.DurationVar(&runningThreshold, "running-threshold", 30*time.Minute, "How long before a Running EphemeralRunner triggers an investigation.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -95,7 +97,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), stuckThreshold)
+	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), stuckThreshold, runningThreshold)
 	if err := erWatcher.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "EphemeralRunnerWatcher")
 		os.Exit(1)
