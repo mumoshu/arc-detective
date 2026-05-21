@@ -24,14 +24,16 @@ type GitHubPoller struct {
 	ghClient     gh.Client
 	pollInterval time.Duration
 	queuedThresh time.Duration
+	counter      *InvestigationCounter
 }
 
-func NewGitHubPoller(c client.Client, ghClient gh.Client, pollInterval time.Duration) *GitHubPoller {
+func NewGitHubPoller(c client.Client, ghClient gh.Client, pollInterval time.Duration, counter *InvestigationCounter) *GitHubPoller {
 	return &GitHubPoller{
 		Client:       c,
 		ghClient:     ghClient,
 		pollInterval: pollInterval,
 		queuedThresh: defaultQueuedThreshold,
+		counter:      counter,
 	}
 }
 
@@ -127,6 +129,13 @@ func (p *GitHubPoller) createJobInvestigation(ctx context.Context, owner, repo, 
 		return err
 	}
 
+	if !p.counter.TryIncrement() {
+		logger := log.FromContext(ctx).WithName("github-poller")
+		logger.Info("Skipping investigation creation: maxInvestigations reached",
+			"current", p.counter.Count(), "name", invName)
+		return nil
+	}
+
 	repoFullName := fmt.Sprintf("%s/%s", owner, repo)
 	steps := make([]v1alpha1.JobStep, len(job.Steps))
 	for i, s := range job.Steps {
@@ -182,6 +191,7 @@ func (p *GitHubPoller) createJobInvestigation(ctx context.Context, owner, repo, 
 		},
 	}
 	if err := p.Create(ctx, inv); err != nil {
+		p.counter.Decrement(1)
 		return err
 	}
 	// Status subresource requires a separate update after creation

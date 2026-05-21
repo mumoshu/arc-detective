@@ -106,14 +106,44 @@ func main() {
 	}
 	ghClient := gh.NewClient(ghOpts...)
 
+	// Determine maxInvestigations from DetectiveConfig (need a direct client
+	// because the manager's cache hasn't started yet).
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "Failed to create direct client")
+		os.Exit(1)
+	}
+
+	maxInv := controller.DefaultMaxInvestigations
+	var configs detectivev1alpha1.DetectiveConfigList
+	if err := directClient.List(context.Background(), &configs); err == nil && len(configs.Items) > 0 {
+		if configs.Items[0].Spec.MaxInvestigations != nil {
+			maxInv = *configs.Items[0].Spec.MaxInvestigations
+		}
+	}
+	if maxInv == 0 {
+		setupLog.Error(nil, "maxInvestigations must be > 0, got 0")
+		os.Exit(1)
+	}
+
+	var invList detectivev1alpha1.InvestigationList
+	if err := directClient.List(context.Background(), &invList); err != nil {
+		setupLog.Error(err, "Failed to list existing investigations for counter init")
+		os.Exit(1)
+	}
+
+	invCounter := controller.NewInvestigationCounter(maxInv)
+	invCounter.Init(len(invList.Items))
+	setupLog.Info("Investigation counter initialized", "current", len(invList.Items), "max", maxInv)
+
 	// Register controllers
-	podWatcher := controller.NewPodWatcher(mgr.GetClient(), collector)
+	podWatcher := controller.NewPodWatcher(mgr.GetClient(), collector, invCounter)
 	if err := podWatcher.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "PodWatcher")
 		os.Exit(1)
 	}
 
-	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), stuckThreshold, runningThreshold)
+	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), stuckThreshold, runningThreshold, invCounter)
 	if err := erWatcher.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "EphemeralRunnerWatcher")
 		os.Exit(1)
@@ -126,13 +156,13 @@ func main() {
 	}
 
 	// Register runnables (periodic timers)
-	poller := controller.NewGitHubPoller(mgr.GetClient(), ghClient, pollInterval)
+	poller := controller.NewGitHubPoller(mgr.GetClient(), ghClient, pollInterval, invCounter)
 	if err := mgr.Add(poller); err != nil {
 		setupLog.Error(err, "Failed to add GitHub poller")
 		os.Exit(1)
 	}
 
-	cleanup := controller.NewCleanup(mgr.GetClient(), storage)
+	cleanup := controller.NewCleanup(mgr.GetClient(), storage, invCounter)
 	if err := mgr.Add(cleanup); err != nil {
 		setupLog.Error(err, "Failed to add cleanup controller")
 		os.Exit(1)

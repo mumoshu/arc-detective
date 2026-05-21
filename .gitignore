@@ -3,3 +3,4 @@ bin/
 Makefile.existing.bak
 cover.out
 .envrc
+.claude/

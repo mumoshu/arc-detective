@@ -17,6 +17,10 @@ type DetectiveConfigSpec struct {
 	// RetentionPeriod controls how long Investigation CRs are kept. Default: 7d.
 	// +optional
 	RetentionPeriod *metav1.Duration `json:"retentionPeriod,omitempty"`
+	// MaxInvestigations caps how many Investigation CRs can exist at once.
+	// Default: 100. Setting to 0 is a configuration error and stops the controller.
+	// +optional
+	MaxInvestigations *int `json:"maxInvestigations,omitempty"`
 }
 
 type RepositoryRef struct {

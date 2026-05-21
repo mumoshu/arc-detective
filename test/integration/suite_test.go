@@ -95,12 +95,14 @@ func TestMain(m *testing.M) {
 	ghClient := gh.NewClient(gh.WithBaseURL(mockGitHub.URL), gh.WithPAT("fake-token"))
 
 	// Register controllers
-	podWatcher := controller.NewPodWatcher(mgr.GetClient(), collector)
+	invCounter := controller.NewInvestigationCounter(controller.DefaultMaxInvestigations)
+
+	podWatcher := controller.NewPodWatcher(mgr.GetClient(), collector, invCounter)
 	if err := podWatcher.SetupWithManager(mgr); err != nil {
 		panic(err)
 	}
 
-	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), 1*time.Second, 5*time.Second)
+	erWatcher := controller.NewEphemeralRunnerWatcher(mgr.GetClient(), 1*time.Second, 5*time.Second, invCounter)
 	if err := erWatcher.SetupWithManager(mgr); err != nil {
 		panic(err)
 	}
@@ -110,12 +112,12 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
-	poller := controller.NewGitHubPoller(mgr.GetClient(), ghClient, 1*time.Second)
+	poller := controller.NewGitHubPoller(mgr.GetClient(), ghClient, 1*time.Second, invCounter)
 	if err := mgr.Add(poller); err != nil {
 		panic(err)
 	}
 
-	cleanup := controller.NewCleanup(mgr.GetClient(), storage)
+	cleanup := controller.NewCleanup(mgr.GetClient(), storage, invCounter)
 	if err := mgr.Add(cleanup); err != nil {
 		panic(err)
 	}

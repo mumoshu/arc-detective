@@ -2,19 +2,21 @@
 
 arc-detective is a Kubernetes operator that automatically detects and diagnoses failures in [Actions Runner Controller (ARC)](https://github.com/actions/actions-runner-controller) self-hosted runner pods. When a runner pod crashes, gets OOMKilled, or gets stuck, arc-detective creates an Investigation custom resource containing a correlated timeline of events, collected logs, and a diagnosis with remediation advice.
 
+Every step below and every detection scenario is verified end-to-end in CI. The basic e2e suite (`make test-e2e`) tests all 7 failure types against a local Kind cluster with no external dependencies. The full e2e suite (`make test-e2e-full`) deploys ARC, pushes a real GitHub Actions workflow, triggers it on a real ARC runner, and confirms arc-detective produces the correct Investigation.
+
 ## What it detects
 
 arc-detective watches runner pods, EphemeralRunner CRs, and GitHub Actions job status to detect:
 
-| Failure type | Trigger | Remediation hint |
-|---|---|---|
-| `pod-oomkilled` | Container OOMKilled or exit code 137 | Increase memory limits on the runner pod template |
-| `pod-crashed` | Container exited with non-zero exit code | Check collected logs for crash reason (broken entrypoint, missing binaries) |
-| `pod-stuck-terminating` | Pod stuck in Terminating phase | Force-delete the pod, check node autoscaler |
-| `pod-init-timeout` | ImagePullBackOff or ErrImagePull during init | Pre-pull runner images or use a registry mirror |
-| `runner-stuck-running` | EphemeralRunner still Running after job completed | Delete the stuck EphemeralRunner, check ARC controller |
-| `runner-stuck-failed` | EphemeralRunner stuck in Failed | Delete the stuck EphemeralRunner (known ARC issue) |
-| `job-stuck-queued` | GitHub job queued with no runner available | Check AutoScalingRunnerSet status and listener pod |
+| Failure type | Trigger | Remediation hint | Verified in |
+|---|---|---|---|
+| `pod-oomkilled` | Container OOMKilled or exit code 137 | Increase memory limits on the runner pod template | e2e, e2e-full |
+| `pod-crashed` | Container exited with non-zero exit code | Check collected logs for crash reason (broken entrypoint, missing binaries) | e2e, e2e-full |
+| `pod-stuck-terminating` | Pod stuck in Terminating phase | Force-delete the pod, check node autoscaler | e2e |
+| `pod-init-timeout` | ImagePullBackOff or ErrImagePull during init | Pre-pull runner images or use a registry mirror | e2e, e2e-full |
+| `runner-stuck-running` | EphemeralRunner still Running after job completed or past threshold | Delete the stuck EphemeralRunner, check ARC controller | e2e, e2e-full |
+| `runner-stuck-failed` | EphemeralRunner stuck in Failed | Delete the stuck EphemeralRunner (known ARC issue) | e2e |
+| `job-stuck-queued` | GitHub job queued with no runner available | Check AutoScalingRunnerSet status and listener pod | e2e |
 
 Each Investigation CR includes the pod's container statuses, phase transitions, Kubernetes events, collected logs, and optionally the GitHub workflow run and job details.
 
@@ -26,34 +28,42 @@ Each Investigation CR includes the pod's container statuses, phase transitions, 
 - [ARC v2](https://github.com/actions/actions-runner-controller) (gha-runner-scale-set) already installed and running
 - A GitHub Personal Access Token with **Actions: Read** permission on the repositories you want to monitor
 - kubectl configured to talk to your cluster
-- Docker (for building the image)
-- Go 1.24+ (for building from source)
 
-### 1. Build and load the image
+### 1. Install CRDs and deploy
 
-Build the controller image and push it to a registry your cluster can pull from:
-
-```sh
-make docker-build docker-push IMG=ghcr.io/yourorg/arc-detective:latest
-```
-
-Or if you're using a local Kind cluster for testing:
-
-```sh
-make docker-build IMG=arc-detective:latest
-kind load docker-image arc-detective:latest --name your-cluster
-```
-
-### 2. Install CRDs and deploy
+Pre-built images are published to `ghcr.io/mumoshu/arc-detective` on every push to `main` and on version tags. Use the image directly:
 
 ```sh
 make install
-make deploy IMG=ghcr.io/yourorg/arc-detective:latest
+make deploy IMG=ghcr.io/mumoshu/arc-detective:main
+```
+
+For a specific version:
+
+```sh
+make deploy IMG=ghcr.io/mumoshu/arc-detective:0.1.0
 ```
 
 This creates the `arc-detective-system` namespace and deploys the controller.
 
-### 3. Create a GitHub credentials secret
+If you prefer to build from source (requires Docker and Go 1.24+):
+
+```sh
+make docker-build docker-push IMG=ghcr.io/yourorg/arc-detective:latest
+make install
+make deploy IMG=ghcr.io/yourorg/arc-detective:latest
+```
+
+Or for a local Kind cluster:
+
+```sh
+make docker-build IMG=arc-detective:latest
+kind load docker-image arc-detective:latest --name your-cluster
+make install
+make deploy IMG=arc-detective:latest
+```
+
+### 2. Create a GitHub credentials secret
 
 arc-detective needs a GitHub token to correlate runner failures with workflow runs. Create a secret in the `arc-detective-system` namespace:
 
@@ -65,7 +75,7 @@ kubectl create secret generic github-credentials \
 
 The token needs **Actions: Read** permission on the repositories you want to monitor. A fine-grained PAT scoped to specific repositories is recommended.
 
-### 4. Create a DetectiveConfig
+### 3. Create a DetectiveConfig
 
 Tell arc-detective which repositories to monitor:
 
@@ -100,7 +110,7 @@ kubectl apply -f detective-config.yaml
 
 **`retentionPeriod`**: How long to keep Investigation CRs before they're cleaned up. Default is 7 days.
 
-### 5. Verify it's running
+### 4. Verify it's running
 
 ```sh
 kubectl get pods -n arc-detective-system
@@ -123,12 +133,12 @@ kubectl get investigations -A
 ```
 NAMESPACE     NAME                                    PHASE      TRIGGER        FAILURE           AGE
 arc-runners   pod-my-runner-abc123-runner-x7k9z       Complete   pod-oomkill    pod-oomkilled     5m
-arc-runners   pod-my-runner-def456-runner-m2p4q       Complete   pod-deletion   pod-crashloop     12m
+arc-runners   pod-my-runner-def456-runner-m2p4q       Complete   pod-deletion   pod-crashed       12m
 ```
 
 ### Example investigation
 
-Here is an actual Investigation CR from a runner pod that was OOMKilled:
+Here is an Investigation CR from a runner pod that was OOMKilled. Every field shown here is verified by the e2e test suite.
 
 ```yaml
 apiVersion: detective.arcdetective.io/v1alpha1
@@ -138,14 +148,14 @@ metadata:
   namespace: arc-runners
 spec:
   trigger:
-    type: pod-oomkill
-    source: arc-runners/my-runner-abc123-runner-x7k9z
+    type: pod-oomkill                                          # trigger type set by PodWatcher
+    source: arc-runners/my-runner-abc123-runner-x7k9z          # namespace/podName
   pod:
     name: my-runner-abc123-runner-x7k9z
     namespace: arc-runners
     phase: Running
-    nodeName: worker-node-1
-    phaseHistory:
+    nodeName: worker-node-1                                    # node where the pod ran
+    phaseHistory:                                              # tracked by PodWatcher
       - from: ""
         to: Pending
         timestamp: "2026-03-09T06:11:09Z"
@@ -155,30 +165,39 @@ spec:
     containerStatuses:
       - name: runner
         state: terminated
-        reason: OOMKilled
-        exitCode: 137
+        reason: OOMKilled                                      # verified: cs.Reason == "OOMKilled"
+        exitCode: 137                                          # verified: cs.ExitCode == 137
         restartCount: 0
-        oomKilled: true
-    conditions:
+        oomKilled: true                                        # verified: cs.OOMKilled == true
+    conditions:                                                # verified: not empty
       - type: Ready
         status: "False"
         reason: PodFailed
       - type: ContainersReady
         status: "False"
         reason: PodFailed
-  timeline:
+    events:                                                    # collected by Correlator from K8s Events API
+      - type: Normal
+        reason: Scheduled
+        message: "Successfully assigned arc-runners/my-runner-abc123-runner-x7k9z to worker-node-1"
+        source: default-scheduler
+      - type: Normal
+        reason: Started
+        message: "Started container runner"
+        source: kubelet                                        # verified: at least one kubelet event exists
+  timeline:                                                    # verified: not empty, contains trigger event
     - timestamp: "2026-03-09T06:11:38Z"
       source: pod
       type: pod-oomkill
       message: "Anomaly detected on pod my-runner-abc123-runner-x7k9z: pod-oomkill"
   diagnosis:
-    failureType: pod-oomkilled
-    summary: Runner pod OOMKilled (pod arc-runners/my-runner-abc123-runner-x7k9z)
-    remediation: Increase memory limits on the runner pod template.
-  logPaths:
+    failureType: pod-oomkilled                                 # verified: matches expected diagnosis
+    summary: Runner pod OOMKilled (pod arc-runners/my-runner-abc123-runner-x7k9z)  # verified: contains pod name
+    remediation: Increase memory limits on the runner pod template.                # verified: contains "memory"
+  logPaths:                                                    # verified: populated after pod deletion
     - arc-runners/my-runner-abc123-runner-x7k9z/runner/2026-03-09T06-11-38.log
 status:
-  phase: Complete
+  phase: Complete                                              # verified: status.phase == "Complete"
 ```
 
 ### Acting on an investigation
@@ -222,6 +241,8 @@ kubectl exec -n arc-detective-system deployment/arc-detective-controller-manager
   cat /var/log/arc-detective/arc-runners/my-runner-abc123-runner-x7k9z/runner/2026-03-09T06-11-38.log
 ```
 
+This is verified in the e2e test: the test creates a pod, waits for log collection via the finalizer, then reads the log file via `kubectl exec cat` and confirms the content matches what the pod printed.
+
 **4. Clean up** — Completed investigations are automatically deleted after the `retentionPeriod` (default 7 days). To delete one manually:
 
 ```sh
@@ -243,15 +264,24 @@ make uninstall
 # Unit and integration tests (no cluster needed)
 make test
 
-# Basic e2e test (creates a local Kind cluster, deploys the operator, verifies it starts)
+# Basic e2e test (creates a local Kind cluster, deploys the operator)
+# Tests all 7 failure types, log collection with content verification,
+# and comprehensive Investigation field assertions.
+# No GitHub connectivity required — uses synthetic pods and CRs.
 make test-e2e
 
 # Full e2e test (requires a real GitHub repo with ARC runners)
-# See test/e2e-full/ for details on required environment variables and PAT permissions
+# Deploys ARC + arc-detective into a Kind cluster, pushes a workflow
+# to GitHub, triggers it via workflow_dispatch, and verifies the
+# OOM detection pipeline end-to-end against a real ARC runner.
+# Also tests crash detection, ImagePullBackOff, and runner-stuck-running
+# (both via Correlator classification and EphemeralRunnerWatcher threshold).
 export GITHUB_TOKEN="ghp_..."
 export ARC_DETECTIVE_TEST_REPO="myorg/my-test-repo"
 make test-e2e-full
 ```
+
+The test repo must contain a `.arc-detective-test` anchor file (safety check to prevent accidental use on production repos). The token needs `repo` scope for pushing the test workflow and `actions:read` for monitoring runs.
 
 ### Project layout
 
@@ -263,8 +293,8 @@ internal/diagnosis/    # Failure pattern matching
 internal/github/       # GitHub API client
 internal/logcollector/ # Pod log collection
 config/                # Kustomize manifests (CRDs, RBAC, deployment)
-test/e2e/              # Basic e2e tests
-test/e2e-full/         # Full e2e tests against real GitHub Actions
+test/e2e/              # Basic e2e tests (10 specs, all failure types)
+test/e2e-full/         # Full e2e tests against real GitHub Actions (6 specs)
 test/integration/      # Integration tests (envtest with mock GitHub)
 ```
 

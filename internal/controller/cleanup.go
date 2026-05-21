@@ -21,10 +21,11 @@ const (
 type Cleanup struct {
 	client.Client
 	storage logcollector.Storage
+	counter *InvestigationCounter
 }
 
-func NewCleanup(c client.Client, storage logcollector.Storage) *Cleanup {
-	return &Cleanup{Client: c, storage: storage}
+func NewCleanup(c client.Client, storage logcollector.Storage, counter *InvestigationCounter) *Cleanup {
+	return &Cleanup{Client: c, storage: storage, counter: counter}
 }
 
 func (c *Cleanup) Start(ctx context.Context) error {
@@ -76,6 +77,8 @@ func (c *Cleanup) runCleanup(ctx context.Context) error {
 		// Delete the Investigation CR
 		if err := c.Delete(ctx, inv); err != nil {
 			logger.Error(err, "Failed to delete investigation", "name", inv.Name)
+		} else {
+			c.counter.Decrement(1)
 		}
 	}
 

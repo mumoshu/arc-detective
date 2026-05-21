@@ -29,6 +29,7 @@ type EphemeralRunnerWatcher struct {
 	client.Client
 	StuckThreshold   time.Duration // how long a Failed ER must exist before triggering
 	RunningThreshold time.Duration // how long a Running ER must exist before triggering
+	counter          *InvestigationCounter
 
 	mu       sync.Mutex
 	erStatus map[types.NamespacedName]*erTracker
@@ -40,11 +41,12 @@ type erTracker struct {
 	transitions  []v1alpha1.StatusTransition
 }
 
-func NewEphemeralRunnerWatcher(c client.Client, stuckThreshold, runningThreshold time.Duration) *EphemeralRunnerWatcher {
+func NewEphemeralRunnerWatcher(c client.Client, stuckThreshold, runningThreshold time.Duration, counter *InvestigationCounter) *EphemeralRunnerWatcher {
 	return &EphemeralRunnerWatcher{
 		Client:           c,
 		StuckThreshold:   stuckThreshold,
 		RunningThreshold: runningThreshold,
+		counter:          counter,
 		erStatus:         make(map[types.NamespacedName]*erTracker),
 	}
 }
@@ -151,6 +153,13 @@ func (r *EphemeralRunnerWatcher) createInvestigation(ctx context.Context, er *un
 		return nil // already exists
 	}
 
+	if !r.counter.TryIncrement() {
+		logger := log.FromContext(ctx)
+		logger.Info("Skipping investigation creation: maxInvestigations reached",
+			"current", r.counter.Count(), "name", invName)
+		return nil
+	}
+
 	r.mu.Lock()
 	erKey := types.NamespacedName{Namespace: er.GetNamespace(), Name: er.GetName()}
 	tracker := r.erStatus[erKey]
@@ -187,6 +196,7 @@ func (r *EphemeralRunnerWatcher) createInvestigation(ctx context.Context, er *un
 		},
 	}
 	if err := r.Create(ctx, inv); err != nil {
+		r.counter.Decrement(1)
 		return err
 	}
 	// Status subresource requires a separate update after creation

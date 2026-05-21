@@ -68,6 +68,11 @@ spec:
                 required:
                 - pvcName
                 type: object
+              maxInvestigations:
+                description: |-
+                  MaxInvestigations caps how many Investigation CRs can exist at once.
+                  Default: 100. Setting to 0 is a configuration error and stops the controller.
+                type: integer
               pollInterval:
                 description: 'PollInterval controls how often the GitHub API is polled.
                   Default: 30s.'

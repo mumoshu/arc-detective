@@ -31,6 +31,7 @@ const (
 type PodWatcher struct {
 	client.Client
 	Collector logcollector.Collector
+	counter   *InvestigationCounter
 
 	mu         sync.Mutex
 	podHistory map[types.NamespacedName]*podTracker
@@ -42,10 +43,11 @@ type podTracker struct {
 	phaseTransitions []v1alpha1.StatusTransition
 }
 
-func NewPodWatcher(c client.Client, collector logcollector.Collector) *PodWatcher {
+func NewPodWatcher(c client.Client, collector logcollector.Collector, counter *InvestigationCounter) *PodWatcher {
 	return &PodWatcher{
 		Client:     c,
 		Collector:  collector,
+		counter:    counter,
 		podHistory: make(map[types.NamespacedName]*podTracker),
 	}
 }
@@ -221,6 +223,12 @@ func (r *PodWatcher) ensureInvestigation(ctx context.Context, pod *corev1.Pod, l
 
 	err := r.Get(ctx, key, inv)
 	if apierrors.IsNotFound(err) {
+		if !r.counter.TryIncrement() {
+			logger := log.FromContext(ctx)
+			logger.Info("Skipping investigation creation: maxInvestigations reached",
+				"current", r.counter.Count(), "name", invName)
+			return nil
+		}
 		inv = &v1alpha1.Investigation{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      invName,
@@ -236,6 +244,7 @@ func (r *PodWatcher) ensureInvestigation(ctx context.Context, pod *corev1.Pod, l
 			},
 		}
 		if err := r.Create(ctx, inv); err != nil {
+			r.counter.Decrement(1)
 			return err
 		}
 		// Status subresource requires a separate update after creation
@@ -259,6 +268,13 @@ func (r *PodWatcher) createAnomalyInvestigation(ctx context.Context, pod *corev1
 
 	if err := r.Get(ctx, key, inv); err == nil {
 		// Already exists
+		return nil
+	}
+
+	if !r.counter.TryIncrement() {
+		logger := log.FromContext(ctx)
+		logger.Info("Skipping investigation creation: maxInvestigations reached",
+			"current", r.counter.Count(), "name", invName)
 		return nil
 	}
 
@@ -286,6 +302,7 @@ func (r *PodWatcher) createAnomalyInvestigation(ctx context.Context, pod *corev1
 		},
 	}
 	if err := r.Create(ctx, inv); err != nil {
+		r.counter.Decrement(1)
 		return err
 	}
 	// Status subresource requires a separate update after creation
