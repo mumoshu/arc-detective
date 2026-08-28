@@ -2,11 +2,17 @@ package github
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	oauth2githubapp "github.com/int128/oauth2-github-app"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +110,48 @@ func TestAPIErrorReturnsError(t *testing.T) {
 	_, err := c.ListWorkflowRuns(context.Background(), "myorg", "myrepo", ListRunsOpts{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
+}
+
+func TestWithGitHubApp(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+	parsedKey, err := oauth2githubapp.ParsePrivateKey(pemBytes)
+	require.NoError(t, err)
+
+	var mintedToken bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/12345/access_tokens":
+			mintedToken = true
+			assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"token":      "installation-token",
+				"expires_at": time.Now().Add(time.Hour),
+			})
+		case r.URL.Path == "/repos/myorg/myrepo/actions/runs":
+			assert.Equal(t, "token installation-token", r.Header.Get("Authorization"))
+			w.Header().Set("X-RateLimit-Remaining", "100")
+			_ = json.NewEncoder(w).Encode(listRunsResponse{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(WithBaseURL(srv.URL), WithGitHubApp(context.Background(), oauth2githubapp.Config{
+		PrivateKey:     parsedKey,
+		AppID:          "1",
+		InstallationID: "12345",
+		BaseURL:        srv.URL,
+	}))
+
+	_, err = c.ListWorkflowRuns(context.Background(), "myorg", "myrepo", ListRunsOpts{})
+	require.NoError(t, err)
+	assert.True(t, mintedToken)
 }
 
 func TestListWorkflowRunsWithoutStatusFilter(t *testing.T) {

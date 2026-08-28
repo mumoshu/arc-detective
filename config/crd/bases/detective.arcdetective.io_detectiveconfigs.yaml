@@ -38,22 +38,6 @@ spec:
             type: object
           spec:
             properties:
-              githubAuth:
-                description: GitHubAuth references a Secret containing GitHub credentials.
-                properties:
-                  secretName:
-                    description: SecretName references the Secret containing credentials.
-                    type: string
-                  type:
-                    description: Type is "app" or "pat".
-                    enum:
-                    - app
-                    - pat
-                    type: string
-                required:
-                - secretName
-                - type
-                type: object
               logStorage:
                 description: LogStorage configures where collected pod logs are stored.
                 properties:
@@ -96,7 +80,6 @@ spec:
                   are kept. Default: 7d.'
                 type: string
             required:
-            - githubAuth
             - logStorage
             - repositories
             type: object

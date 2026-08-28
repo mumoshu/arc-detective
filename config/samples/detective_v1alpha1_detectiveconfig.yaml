@@ -6,9 +6,6 @@ spec:
   repositories:
     - owner: myorg
       name: myrepo
-  githubAuth:
-    type: pat
-    secretName: github-credentials
   pollInterval: 30s
   logStorage:
     pvcName: arc-detective-logs
