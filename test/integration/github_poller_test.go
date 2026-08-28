@@ -20,7 +20,6 @@ func TestGitHubPollerDetectsStuckQueuedJob(t *testing.T) {
 	config := newDetectiveConfig(ns, "test-config", v1alpha1.DetectiveConfigSpec{
 		Repositories: []v1alpha1.RepositoryRef{{Owner: "myorg", Name: "myrepo"}},
 		PollInterval: &pollInterval,
-		GitHubAuth:   v1alpha1.GitHubAuthRef{Type: "pat", SecretName: "gh-secret"},
 		LogStorage:   v1alpha1.LogStorageSpec{PVCName: "test-pvc"},
 	})
 	require.NoError(t, k8sClient.Create(ctx, config))

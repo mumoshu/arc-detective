@@ -63,17 +63,33 @@ make install
 make deploy IMG=arc-detective:latest
 ```
 
-### 2. Create a GitHub credentials secret
+### 2. Configure GitHub authentication
 
-arc-detective needs a GitHub token to correlate runner failures with workflow runs. Create a secret in the `arc-detective-system` namespace:
+arc-detective needs GitHub credentials to correlate runner failures with workflow runs, supplied as environment variables on the `controller-manager` container. Either a Personal Access Token or a GitHub App installation works.
+
+**Personal Access Token:**
 
 ```sh
-kubectl create secret generic github-credentials \
+kubectl set env deployment/controller-manager \
   --namespace arc-detective-system \
-  --from-literal=token=ghp_xxxxxxxxxxxxxxxxxxxx
+  GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
 ```
 
 The token needs **Actions: Read** permission on the repositories you want to monitor. A fine-grained PAT scoped to specific repositories is recommended.
+
+**GitHub App:**
+
+```sh
+kubectl set env deployment/controller-manager \
+  --namespace arc-detective-system \
+  GITHUB_APP_ID=123456 \
+  GITHUB_APP_INSTALLATION_ID=789012 \
+  GITHUB_APP_PRIVATE_KEY="$(cat private-key.pem)"
+```
+
+The App needs **Actions: Read** repository permission and must be installed on the repositories you want to monitor.
+
+For production use, prefer sourcing these from a Secret (`valueFrom.secretKeyRef`) rather than plain environment variables.
 
 ### 3. Create a DetectiveConfig
 
@@ -91,9 +107,6 @@ spec:
       name: myrepo
     - owner: myorg
       name: another-repo
-  githubAuth:
-    type: pat
-    secretName: github-credentials
   pollInterval: 30s
   logStorage:
     pvcName: ""

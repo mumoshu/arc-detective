@@ -192,11 +192,6 @@ template:
 		waitForPodPhase(detectiveNS, controllerPod, "Running", 3*time.Minute, 3*time.Second)
 		_, _ = fmt.Fprintf(GinkgoWriter, "Controller pod running: %s\n", controllerPod)
 
-		By("creating github-credentials secret for DetectiveConfig")
-		mustRunCmd("kubectl", "create", "secret", "generic", "github-credentials",
-			"--namespace", detectiveNS,
-			"--from-literal=token="+ghToken)
-
 		By("creating DetectiveConfig CR")
 		configYAML := fmt.Sprintf(`apiVersion: detective.arcdetective.io/v1alpha1
 kind: DetectiveConfig
@@ -207,9 +202,6 @@ spec:
   repositories:
     - owner: %s
       name: %s
-  githubAuth:
-    type: pat
-    secretName: github-credentials
   pollInterval: 3s
   logStorage:
     pvcName: ""
