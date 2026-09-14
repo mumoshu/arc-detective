@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	oauth2githubapp "github.com/int128/oauth2-github-app"
+
 	detectivev1alpha1 "github.com/mumoshu/arc-detective/api/v1alpha1"
 	"github.com/mumoshu/arc-detective/internal/controller"
 	gh "github.com/mumoshu/arc-detective/internal/github"
@@ -42,6 +44,9 @@ func main() {
 	var probeAddr string
 	var logStoragePath string
 	var ghToken string
+	var ghAppID string
+	var ghAppInstallationID string
+	var ghAppPrivateKey string
 	var ghBaseURL string
 	var pollInterval time.Duration
 	var stuckThreshold time.Duration
@@ -52,6 +57,11 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election.")
 	flag.StringVar(&logStoragePath, "log-storage-path", "/var/log/arc-detective", "Path to store collected pod logs.")
 	flag.StringVar(&ghToken, "github-token", os.Getenv("GITHUB_TOKEN"), "GitHub PAT for API access.")
+	flag.StringVar(&ghAppID, "github-app-id", os.Getenv("GITHUB_APP_ID"), "GitHub App ID for API access.")
+	flag.StringVar(&ghAppInstallationID, "github-app-installation-id", os.Getenv("GITHUB_APP_INSTALLATION_ID"),
+		"GitHub App installation ID for API access.")
+	flag.StringVar(&ghAppPrivateKey, "github-app-private-key", os.Getenv("GITHUB_APP_PRIVATE_KEY"),
+		"GitHub App private key (PEM) for API access.")
 	flag.StringVar(&ghBaseURL, "github-base-url", "", "GitHub API base URL (for testing).")
 	flag.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "GitHub API poll interval.")
 	flag.DurationVar(&stuckThreshold, "stuck-threshold", 5*time.Minute,
@@ -100,7 +110,28 @@ func main() {
 	storage := logcollector.NewDiskStorage(logStoragePath)
 	collector := logcollector.NewPodLogCollector(clientset, storage)
 
-	ghOpts := []gh.Option{gh.WithPAT(ghToken)}
+	var ghOpts []gh.Option
+	switch {
+	case ghAppID != "" || ghAppInstallationID != "" || ghAppPrivateKey != "":
+		if ghAppID == "" || ghAppInstallationID == "" || ghAppPrivateKey == "" {
+			setupLog.Error(nil,
+				"github-app-id, github-app-installation-id, and github-app-private-key must all be set together")
+			os.Exit(1)
+		}
+		privateKey, err := oauth2githubapp.ParsePrivateKey([]byte(ghAppPrivateKey))
+		if err != nil {
+			setupLog.Error(err, "Failed to parse GitHub App private key")
+			os.Exit(1)
+		}
+		ghOpts = append(ghOpts, gh.WithGitHubApp(context.Background(), oauth2githubapp.Config{
+			PrivateKey:     privateKey,
+			AppID:          ghAppID,
+			InstallationID: ghAppInstallationID,
+			BaseURL:        ghBaseURL,
+		}))
+	case ghToken != "":
+		ghOpts = append(ghOpts, gh.WithPAT(ghToken))
+	}
 	if ghBaseURL != "" {
 		ghOpts = append(ghOpts, gh.WithBaseURL(ghBaseURL))
 	}

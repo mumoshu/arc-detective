@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	oauth2githubapp "github.com/int128/oauth2-github-app"
+	"golang.org/x/oauth2"
 )
 
 // Client is the interface for GitHub Actions API operations.
@@ -33,6 +36,18 @@ func WithBaseURL(baseURL string) Option {
 
 func WithPAT(token string) Option {
 	return func(c *client) { c.token = token }
+}
+
+// WithGitHubApp configures the client to authenticate as a GitHub App
+// installation, automatically minting and refreshing installation access
+// tokens via cfg.TokenSource.
+func WithGitHubApp(ctx context.Context, cfg oauth2githubapp.Config) Option {
+	return func(c *client) {
+		c.httpClient = &http.Client{
+			Timeout:   c.httpClient.Timeout,
+			Transport: &oauth2.Transport{Source: cfg.TokenSource(ctx)},
+		}
+	}
 }
 
 func WithHTTPClient(hc *http.Client) Option {

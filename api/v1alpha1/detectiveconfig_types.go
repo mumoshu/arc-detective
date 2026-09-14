@@ -7,8 +7,6 @@ import (
 type DetectiveConfigSpec struct {
 	// Repositories lists the GitHub repos to monitor for failed workflow jobs.
 	Repositories []RepositoryRef `json:"repositories"`
-	// GitHubAuth references a Secret containing GitHub credentials.
-	GitHubAuth GitHubAuthRef `json:"githubAuth"`
 	// PollInterval controls how often the GitHub API is polled. Default: 30s.
 	// +optional
 	PollInterval *metav1.Duration `json:"pollInterval,omitempty"`
@@ -26,14 +24,6 @@ type DetectiveConfigSpec struct {
 type RepositoryRef struct {
 	Owner string `json:"owner"`
 	Name  string `json:"name"`
-}
-
-type GitHubAuthRef struct {
-	// Type is "app" or "pat".
-	// +kubebuilder:validation:Enum=app;pat
-	Type string `json:"type"`
-	// SecretName references the Secret containing credentials.
-	SecretName string `json:"secretName"`
 }
 
 type LogStorageSpec struct {
